@@ -715,7 +715,13 @@ suite.
 
 ---
 
-## 13. Implementation status (2026-07-22)
+## 13. Implementation status (2026-10-15)
+
+Re-checked against the tree on this date. The 2026-07-22 ledger below is
+still the right honesty list: none of its open items have landed, and none
+of its struck-through items have been unshipped. What the July note did not
+record, because it had not been written yet, is now in the tree and called
+out under "Additions".
 
 The roadmap above was implemented incrementally, with several additions that
 emerged during build-out. CI keeps format, Clippy, cross-platform tests,
@@ -784,3 +790,136 @@ evolution is restricted to nullable trailing columns, numeric widening, and
 nullability relaxation; SQL ASOF syntax intentionally supports the common
 equality-key form; S3-compatible stores must provide reliable conditional
 puts; continuous aggregates and distributed compute remain out of scope.
+
+Additions since the July ledger (all in the tree, all keeping the §9
+non-goals — still no server, no RBAC, no agent noun inside the engine):
+
+- **Forks** (§11.3, ROADMAP Parts IX and X): catalog-scoped copy-on-write
+  branches, nested forks, `fork diff`, first-commit-wins `promote`.
+- **Multi-table transactions** (`transaction.rs`): crash atomicity via a
+  journal that recovery rolls forward. A reader can still observe a prefix
+  of the HEAD swaps; the durable outcome is all or none.
+- **Event-driven backtest** (`h5i-db-backtest`): runs inside a fork and
+  writes `bt_*` result tables. A trial record with code identity is a
+  service-boundary addition (§14), not something this crate recorded.
+- **Research pin** (`H5iSession` / `ResearchPin`): arrival version plus an
+  event-time cutoff applied as a view over catalog tables. Table functions
+  refuse the cutoff rather than enforcing it (`pin.rs`). That split is the
+  gap §14 closes.
+- **Notebook, review UI, venue loaders, data-policy constraints** on the
+  write path. Python wheels are built and smoke-tested in CI; this tree
+  still does not record a public PyPI release, so the Phase 3 row stays ◐.
+
+---
+
+## 14. Service boundary
+
+The engine stays what §9 says it is: an embedded library, no daemon, no
+RBAC, no agent noun. A research lab that runs many agents against one
+database needs a second shape — a worker API with idempotent effects,
+scoped reads, a sealed holdout, and a ledger it can reconcile. That shape
+is a library the lab calls. It is not a mode of the engine.
+
+The non-goals are unchanged. Nothing in this section adds a server, a
+role, or an agent identity to `h5i-db-core`. A *capability* is not a role:
+the caller builds a handle that can see one fork up to one decision time
+and cannot see sealed ranges, and every read through that handle enforces
+the handle. Who is allowed to build which handle is the lab's decision.
+The engine never learns it.
+
+### 14.1 What the lab has to do, and where it lives today
+
+| Operation | Today | Gap |
+|---|---|---|
+| Create a fork of main at a version | `Database::create_fork` (`fork.rs`), CLI `fork create`, Python `create_fork`. `as_of_ns` pins each table at the last commit with `committed_at <= t`. | No idempotency key. "Version v" is not one number across tables; the pin is per table. A retry after `ForkExists` cannot tell "this is my fork" from "someone else took the name". |
+| Ingest into a fork | `open_fork` then `append` / `write` / `replace_range` (`database.rs`). CLI `ingest`, Python `ingest`. `WriteOptions::expected_version` is the CAS. `idempotency_key` is stored in manifest `user_meta` and replayed across the last 64 commits (`IDEMPOTENCY_LOOKBACK`). | Replay matches the key only. The same key with different bytes returns the first commit instead of a typed mismatch. The lookback is a stated bound, not a durable effect log. |
+| Query at a decision time | `H5iSession::new_pinned` + `ResearchPin` (`session.rs`). CLI `--as-of` (arrival) and `--decision-time` / `--embargo` (event time). The cutoff is a view filter installed by `prepare_resolved_table`. | Not one enforcement point. `Database::scan` / Python `read` do not see the view. `h5i()`, `asof_join()`, `gapfill()`, `latest_on()`, `tail()` read through providers built without the view, and `pin.rs` refuses them when a cutoff is set rather than clipping them. Provider `statistics()` describe the unfiltered version, so a metadata-only `max(ts)` can answer from past the cutoff. Predicate-cache entries are keyed by the user predicate only. |
+| Run a backtest | `h5i_db_backtest::run::run_in_fork` / `run_in_place`. Reads market data through `Database::scan` (`store.rs`), writes `bt_run`, `bt_orders`, `bt_fills`, `bt_positions`, `bt_equity` in one journaled transaction. | No trial record. Code identity, parameters, decision time, and scope are not part of `RunSpec`. A caller can run and keep only the tables it wants to show; nothing forces a trial row. The scan path does not know about a decision-time ceiling. |
+| Plan / apply | `plan_write`, `plan_replace_range`, `apply_plan` (`plan.rs`). Apply is a metadata CAS against the plan's base version and checksum. | Apply takes no idempotency key of its own (the plan's `user_meta` is copied onto the commit). A retried apply after success is a `VersionConflict`, not a replay of the first result. |
+| Promote | `Database::promote` (`fork.rs`), one table, CAS on the fork's base version. CLI `fork promote`, Python `promote`. | A second call after success is `PromoteConflict`, not a replay. Several tables are several calls: a crash in between publishes a prefix. Created-table promote is a catalog move, also one table at a time. |
+| List forks / versions | `fork_names`, `list_forks` → `ForkSummary`, `list_versions` → `VersionSummary`. | Enough for one process. No single ordered document a ledger can diff. |
+| List runs / read a run | Rows in `bt_run` on the run's fork. `RunReport` exists only in memory. | No cross-fork listing. No typed, serializable run record that survives the process. |
+| Holdout | Nothing. Retention (`retention.rs`) drops old data; it does not hide a range. The research pin hides *future* event time, not a named sealed window inside the past. | A sealed range has to be unreadable from SQL, Python, backtest replay, the notebook, and the UI, and readable from exactly one evaluation call that records itself. |
+| Reconciliation | `verify` checks checksums. `fork diff` compares one fork to its base. | No deterministic export of forks, runs, trials, evaluations, and promotions, and no diff against an external ledger snapshot. |
+
+### 14.2 Where the new code sits
+
+| Piece | Crate | Why there |
+|---|---|---|
+| `ReadScope`, seal set, row/segment visibility | `h5i-db-core` | Every reader must share one predicate. A seal is a property of the bytes, like retention, not an agent. |
+| Scan-path enforcement | `Database::scan_stream_resolved` | Backtest replay, Python `read`, and any engine scan. |
+| SQL-path enforcement | `H5iTableProvider` | DataFusion SQL, the notebook kernel, the review UI, Python `sql`, and the table functions (`h5i`, `asof_join`, …) all build this provider. The view filter stops being the thing that makes the cutoff true. |
+| Trial row on every backtest | `h5i-db-backtest` `write_run` | There is no flag to skip it. The row commits in the same journal as the other `bt_*` tables. |
+| Worker API | `h5i-db-service` (new) | Fork, ingest, query, backtest, plan/apply, promote, lists, run read, seal, holdout evaluation, reconcile. Serde requests, results, and errors. Idempotency keys live here and are passed down into manifest `user_meta`. |
+| CLI `reconcile`, `seal`, `holdout` | `h5i-db-cli` | Thin calls into the service. Existing commands keep their flags; ingest and promote gain the fingerprint check by going through the same `WriteOptions` the service uses. |
+
+`h5i-db-service` depends on core, query, and backtest. Nothing in the engine depends on it. Deleting the crate leaves the database, the CLI, and the notebook behaving as they do today, plus the scope check, which is a no-op when the handle is unrestricted and no seal exists.
+
+### 14.3 Idempotency
+
+Every mutating service call takes an idempotency key.
+
+- The fingerprint is blake3 of the canonical JSON of the request with the key removed.
+- The first successful call stores the key, the fingerprint, and the serialized result.
+- The same key and the same fingerprint return that result and do not write again.
+- The same key and a different fingerprint is `idempotency_conflict` (not retryable).
+- Table writes also store the key and the fingerprint in manifest `user_meta`. A retry that lost the service record still finds the commit. A fingerprint that does not match is `idempotency_conflict`, including the case where an older commit recorded the key and no fingerprint: absence is not a match.
+- The 64-commit lookback still bounds the manifest scan. The service effect log does not have that bound: it is one object per key (`service/effects/<blake3(key)>.json`), written after the engine commit and consulted first.
+- Fork create stores the key in the fork's `user_meta`. `ForkExists` on retry resolves to the first fork when the fingerprint matches.
+- Promote stores enough in the base manifest's existing `h5i.forked_from` meta that a retry of the same fork table returns the first `PromoteResult` instead of `PromoteConflict`.
+
+### 14.4 Conditional commits
+
+`expected_version` was already the contract (§5): commit on top of version `v`, else `VersionConflict`. The service makes it mandatory on ingest, apply, and promote rather than optional.
+
+| Call | The `v` it names | On mismatch |
+|---|---|---|
+| Ingest (`append`, `write`, `replace_range`) | Head sequence of the fork table the write will land on | `version_conflict` |
+| Apply | The plan's `base_version` (and the plan checksum the apply path already checks) | `version_conflict` |
+| Promote | The base sequence the fork pinned | `promote_conflict`, unless the base manifest is already the promotion of this fork table (§14.3) |
+
+What is atomic, what a reader can observe, and what a crash leaves:
+
+- **One table commit** (ingest, apply, single promote). Segments and the new manifest are durable before `HEAD` moves. `HEAD` moves by atomic rename (local) or conditional put (object store). A reader resolves `HEAD` once and then reads immutable objects, so it sees the old version or the new one, never a mix of their segments. Crash before the swap: the old head remains; orphan segments are vacuum debris. Crash during the swap: the rename either happened or it did not.
+- **Multi-table ingest** (`Transaction`). The journal is the commit point. Crash before the journal: no head moved. Crash after: `open` rolls the remaining swaps forward. A reader during the swap loop can see a prefix. That window is the one `transaction.rs` documents; this section does not widen it.
+- **Multi-table promote** (`promote_all`). Same shape, own journal (`service/promote-journal/`). Each table promote is itself one atomic commit. The journal is written first; recovery re-invokes promote, which is idempotent (§14.3), until every listed table has landed. Before the journal is durable, nothing new is promised. After it is, the durable outcome is the whole list. During recovery a reader can see a prefix, as with any other journal.
+- **Holdout evaluation.** The "opened" record is durable before any granted read. Crash after that and before "completed": the same idempotency key may finish; every other key sees `holdout_used` and reads nothing. There is no path that returns sealed rows and then fails to record that the attempt happened.
+
+### 14.5 Scoped handles
+
+`ReadScope` is a value on the `Database` handle, next to the fork pointer that is already a handle (`open_fork` returns a new `Database`). It carries:
+
+- an event-time ceiling in nanoseconds (`None` = no ceiling);
+- the sealed ranges to exclude;
+- an optional holdout grant, which is one sealed span this handle may read.
+
+`H5iTableProvider` and `Database::scan_stream_resolved` both call `ReadScope::classify`. That function is the enforcement point. Segment pruning drops a segment whose recorded time range is wholly outside the visible set. A segment that straddles the ceiling or a seal is read and then filtered row by row. Statistics used by the planner are computed from the visible set only: a segment that straddles makes the statistic inexact and suppresses min/max, so `max(ts)` cannot be answered from a manifest that still knows the future. The predicate cache hash includes the scope predicate, so an entry built under one scope is never reused under another.
+
+Arrival time is the other axis and stays the version pin (`ReadAt`). A restatement is a new version. A handle whose pin is `AsOf(decision_time)` does not resolve that version, so the restatement's rows are not in the manifest the provider scans. The service query path sets both axes to the decision time. The CLI keeps them independent, because a bulk ingest's commit clock and event clock are different things (§8 research pin); that choice is unchanged.
+
+A scope that restricts a table with no timestamp-typed time column fails the read. Guessing a unit for an integer column would open a hole. An unrestricted handle on an unsealed database takes the same scan path as before: one atomic flag, no extra predicate, statistics untouched.
+
+Fork isolation is the catalog, not the scope. A fork handle resolves names in its own catalog and then at pinned base versions. It has no API that lists another fork's shadow tables. The scope does not re-implement that.
+
+### 14.6 Sealed holdout
+
+`Database::seal_range` writes one object under `seals/<id>.json`: table, half-open `[start_ns, end_ns)`, note. The seal cache is an `Arc` shared by every handle of that open, updated in place, so a session built earlier still filters on its next scan.
+
+Ordinary reads exclude every seal. `Database::begin_holdout` is the only constructor of a grant. It writes an evaluation record in state `opened` first, keyed by the idempotency key and the strategy fingerprint (code identity, parameters, data version, seal id). A second fingerprint against the same seal is `holdout_used`. The granted handle can scan the sealed span; the evaluation returns a summary the caller computed, then `finish` stores that summary and flips the record to `completed`. Dropping the session without `finish` leaves it `opened`, which still denies everyone else.
+
+### 14.7 Trial records
+
+`write_run` writes `bt_trial` in the same journal as the other run tables. The row carries data version (`ReadAt` plus the resolved sequence of each market-data table the run read), code identity, parameters, decision time, fork name, window, config digest, and a result summary (final cash, realized pnl, commissions, records processed, settlement flag). `run_in_place` fills it. There is no parameter that turns the write off. A caller that does not know its code identity still produces a row, with the identity marked unspecified, so the trial count cannot be lowered by omission.
+
+### 14.8 Reconciliation
+
+`Service::export_state` returns one JSON document, arrays ordered by name and id: forks (pins, own heads), versions of each fork-owned table, trials, holdout evaluations, promotions (from `h5i.forked_from` on base manifests). `Service::reconcile` diffs that document against a ledger snapshot of the same shape. The diff lists missing, extra, and field-level mismatches. The CLI command is `h5i-db reconcile <db> --ledger <file>`. Exit 0 when the two agree, exit 2 when they do not, the diff on stdout as JSON.
+
+### 14.9 Compatibility
+
+Public CLI flags, Python methods, and the on-disk format of existing objects stay as they are. New objects (`seals/`, `service/effects/`, `bt_trial`, promote journals) are additive. A reader that predates seals will not hide sealed rows; `FORMAT.min_reader_version` is not raised, because a seal is an application object a newer reader consults, and an older reader is simply not a scoped reader. The lab, which is the thing that seals, is a new reader. Documented intentional changes:
+
+- `WriteOptions` grows `idempotency_fingerprint`. Callers that leave it `None` keep today's key-only replay.
+- A second `promote` of a fork table that already promoted returns the first result instead of `PromoteConflict` when the base version is that promotion. A later conflicting write still conflicts.
+- With a decision-time ceiling set, `asof_join` and the other table functions run against clipped providers instead of refusing the cutoff. An unpinned session is unchanged.
+- Backtests gain a `bt_trial` table. Readers that listed a fixed set of `bt_*` names will see one more.
