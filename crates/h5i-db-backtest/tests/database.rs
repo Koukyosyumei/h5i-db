@@ -369,12 +369,88 @@ async fn a_run_lives_on_a_fork_and_leaves_the_base_untouched() {
         "bt_fills",
         "bt_positions",
         "bt_equity",
+        "bt_trial",
     ] {
         assert!(
             fork_tables.contains(&expected.to_string()),
             "missing {expected}"
         );
     }
+
+    let trial = trial_row(&fork).await;
+    assert_eq!(trial["code_identity"], "unspecified");
+    assert_eq!(trial["parameters"], "{}");
+    assert_eq!(trial["run_id"], "demo");
+    assert!(
+        trial["data_version"].contains("read_at"),
+        "the trial must pin the data it read: {}",
+        trial["data_version"]
+    );
+    assert!(
+        trial["scope"].contains("fork=bt-demo"),
+        "scope: {}",
+        trial["scope"]
+    );
+    assert!(trial["result_summary"].contains("records_processed"));
+}
+
+async fn trial_row(db: &Database) -> std::collections::HashMap<String, String> {
+    use arrow::array::{Array, StringArray};
+    use h5i_db_core::database::ScanOptions;
+    let (batches, _) = db
+        .scan("bt_trial", ReadAt::Latest, ScanOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        1,
+        "a backtest writes exactly one trial row"
+    );
+    let batch = &batches[0];
+    let mut out = std::collections::HashMap::new();
+    for field in batch.schema().fields() {
+        let column = batch.column(batch.schema().index_of(field.name()).unwrap());
+        if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+            out.insert(field.name().clone(), values.value(0).to_string());
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_named_trial_keeps_its_code_parameters_and_decision_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seeded_db(&dir).await;
+    let mut strategy = SignalReplay::new(vec![]).unwrap();
+    run_in_fork(
+        &db,
+        RunSpec::new("named", money(1_000.0))
+            .code_identity("strategy-v1")
+            .parameters("{\"k\":1}")
+            .decision_time_ns(2 * SECOND),
+        &mut strategy,
+        |builder| builder,
+    )
+    .await
+    .unwrap();
+    let fork = db.open_fork("bt-named").await.unwrap();
+    let trial = trial_row(&fork).await;
+    assert_eq!(trial["code_identity"], "strategy-v1");
+    assert_eq!(trial["parameters"], "{\"k\":1}");
+    let (batches, _) = fork
+        .scan(
+            "bt_trial",
+            ReadAt::Latest,
+            h5i_db_core::database::ScanOptions::default(),
+        )
+        .await
+        .unwrap();
+    let column = batches[0]
+        .column(batches[0].schema().index_of("decision_time_ns").unwrap())
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .unwrap();
+    assert_eq!(column.value(0), 2 * SECOND);
 }
 
 #[tokio::test]
@@ -423,7 +499,7 @@ async fn positions_rebuild_from_the_stored_fill_log() {
 
 #[tokio::test]
 async fn a_second_run_on_one_fork_merges_instead_of_appending_backwards() {
-    // `write_run` commits the five `bt_*` tables as one transaction, which is
+    // `write_run` commits the `bt_*` tables as one transaction, which is
     // an append and therefore refuses rows that land before what is already
     // stored. Two runs sharing a fork is exactly that case: the second run
     // starts earlier than the first ended. The transaction must fall back to

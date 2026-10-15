@@ -22,6 +22,7 @@ use crate::engine::{Engine, EngineBuilder, RunResult, Strategy};
 use crate::error::{BacktestError, Result};
 use crate::instrument::{InstrumentId, InstrumentSet, OutcomeId};
 use crate::replay::{Replay, priority};
+use crate::schema;
 use crate::settlement::{Resolution, SettlementReport, settle, validate_resolutions};
 use crate::store;
 use crate::types::{Money, Price, UnixNanos};
@@ -62,6 +63,15 @@ pub struct RunSpec {
     /// then reports as an unfingerprinted run rather than pretending the
     /// models matched.
     pub execution_fingerprint: Option<String>,
+    /// Who produced this trial. `None` is stored as `unspecified`; the row
+    /// is still written.
+    pub code_identity: Option<String>,
+    /// Parameters of the trial, as the caller describes them. `None` is
+    /// stored as `{}`.
+    pub parameters: Option<String>,
+    /// Event-time decision instant, nanoseconds. Distinct from `read_at`,
+    /// which is the arrival pin.
+    pub decision_time_ns: Option<i64>,
 }
 
 impl RunSpec {
@@ -74,6 +84,9 @@ impl RunSpec {
             equity_interval_nanos: crate::engine::DEFAULT_EQUITY_INTERVAL_NANOS,
             minimum_coverage: None,
             execution_fingerprint: None,
+            code_identity: None,
+            parameters: None,
+            decision_time_ns: None,
         }
     }
 
@@ -100,6 +113,21 @@ impl RunSpec {
 
     pub fn minimum_coverage(mut self, fraction: f64) -> Self {
         self.minimum_coverage = Some(fraction);
+        self
+    }
+
+    pub fn code_identity(mut self, identity: impl Into<String>) -> Self {
+        self.code_identity = Some(identity.into());
+        self
+    }
+
+    pub fn parameters(mut self, parameters: impl Into<String>) -> Self {
+        self.parameters = Some(parameters.into());
+        self
+    }
+
+    pub fn decision_time_ns(mut self, nanos: i64) -> Self {
+        self.decision_time_ns = Some(nanos);
         self
     }
 
@@ -142,6 +170,20 @@ impl RunSpec {
             None => {
                 hasher.update(b"-");
             }
+        }
+        // Absent fields add no bytes, so a spec that does not set them keeps
+        // the digest it had before these fields existed.
+        if let Some(identity) = &self.code_identity {
+            hasher.update(b"c");
+            hasher.update(identity.as_bytes());
+        }
+        if let Some(parameters) = &self.parameters {
+            hasher.update(b"p");
+            hasher.update(parameters.as_bytes());
+        }
+        if let Some(decision) = self.decision_time_ns {
+            hasher.update(b"d");
+            hasher.update(&decision.to_le_bytes());
         }
         hasher.finalize().to_hex().to_string()
     }
@@ -475,7 +517,26 @@ where
     let settlement = settle(&portfolio, &resolutions, result.simulated_through, &marks)?;
 
     let digest = spec.digest();
-    store::write_run(db, &spec.run_id, &digest, &result, &settlement, started_at).await?;
+    let stamp = store::TrialStamp {
+        code_identity: spec
+            .code_identity
+            .clone()
+            .unwrap_or_else(|| "unspecified".to_string()),
+        parameters: spec.parameters.clone().unwrap_or_else(|| "{}".to_string()),
+        data_version: recorded_data_version(db, &spec.read_at).await?,
+        decision_time_ns: spec.decision_time_ns,
+        scope: trial_scope(db, &spec),
+    };
+    store::write_run_with_trial(
+        db,
+        &spec.run_id,
+        &digest,
+        &result,
+        &settlement,
+        started_at,
+        &stamp,
+    )
+    .await?;
 
     Ok(RunReport {
         run_id: spec.run_id,
@@ -487,4 +548,42 @@ where
         instruments,
         resolutions,
     })
+}
+
+fn trial_scope(db: &Database, spec: &RunSpec) -> String {
+    let fork = db.fork_name().unwrap_or("base");
+    let window = match spec.window {
+        Some(window) => format!("{}..{}", window.start().get(), window.end().get()),
+        None => "all".to_string(),
+    };
+    format!("fork={fork};window={window}")
+}
+
+/// `ReadAt` plus the sequence of every market-data table at that pin.
+///
+/// A table that does not exist yet, or has no version at the pin, is null.
+/// That is the same reading as an empty scan: the data was not there.
+async fn recorded_data_version(db: &Database, at: &ReadAt) -> Result<String> {
+    let mut tables = serde_json::Map::new();
+    for (name, _, _) in schema::market_data_tables(crate::decimal::FixedEncoding::Float) {
+        match db.resolve(name, at.clone()).await {
+            Ok(resolved) => {
+                tables.insert(
+                    name.to_string(),
+                    serde_json::Value::from(resolved.manifest.sequence),
+                );
+            }
+            Err(error)
+                if error.code() == "table_not_found" || error.code() == "version_not_found" =>
+            {
+                tables.insert(name.to_string(), serde_json::Value::Null);
+            }
+            Err(error) => return Err(BacktestError::invalid(error.to_string())),
+        }
+    }
+    Ok(serde_json::json!({
+        "read_at": format!("{at:?}"),
+        "tables": tables,
+    })
+    .to_string())
 }
