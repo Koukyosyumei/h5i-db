@@ -478,6 +478,27 @@ impl Database {
                 op: "apply_plan".into(),
             });
         }
+        // A retry after a successful apply finds the commit by the key the
+        // plan carried, even when the head has moved past `base_version`.
+        // No key keeps today's compare-and-swap.
+        let replay_opts = crate::database::WriteOptions {
+            idempotency_key: plan
+                .user_meta
+                .get(crate::database::IDEMPOTENCY_META_KEY)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            idempotency_fingerprint: plan
+                .user_meta
+                .get(crate::database::IDEMPOTENCY_FINGERPRINT_META_KEY)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            ..Default::default()
+        };
+        if replay_opts.idempotency_key.is_some()
+            && let Some(replay) = self.idempotent_replay(&plan.table, &replay_opts).await?
+        {
+            return Ok(replay);
+        }
         plan.verify("plan")?;
         if plan.is_expired() {
             return Err(Error::invalid(format!(

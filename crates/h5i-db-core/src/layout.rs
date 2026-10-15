@@ -13,6 +13,10 @@
 //!   forks/<hash-of-name>.json           # name -> {table uuid: pinned version}
 //!   catalog/forks/<hash-of-fork>/<hash-of-name>.json   # fork-scoped catalog
 //!   FORK_INDEX.json                     # derived cache over the two above
+//!   seals/<hash-of-id>.json             # sealed event-time range (application object)
+//!   holdout/<hash-of-seal-id>.json      # one evaluation of a seal
+//!   service/effects/<hash-of-key>.json  # worker idempotency log
+//!   service/promote-journal/<hash>.json # multi-table promote recovery journal
 //! ```
 //!
 //! Everything here is authoritative except `FORK_INDEX.json`, which is a
@@ -45,6 +49,13 @@ pub const FORK_CATALOG_PREFIX: &str = "catalog/forks";
 /// putting it inside the prefix whose listing validates it would make the
 /// index part of its own input. Deleting it is always safe.
 pub const FORK_INDEX_FILE: &str = "FORK_INDEX.json";
+
+/// Sealed event-time ranges. Additive application objects: they do not change
+/// `FORMAT_VERSION` or `min_reader_version`. A reader that predates them does
+/// not hide the rows.
+pub const SEAL_PREFIX: &str = "seals";
+pub const HOLDOUT_PREFIX: &str = "holdout";
+pub const SERVICE_PREFIX: &str = "service";
 
 /// Current database format version and the minimum reader that understands it.
 ///
@@ -169,6 +180,41 @@ pub fn fork_index_path() -> ObjPath {
 /// same "user strings never become path components" rule as everywhere else.
 pub fn fork_catalog_prefix(fork_name: &str) -> ObjPath {
     ObjPath::from(format!("{FORK_CATALOG_PREFIX}/{}", hash_name(fork_name)))
+}
+
+pub fn seals_prefix() -> ObjPath {
+    ObjPath::from(SEAL_PREFIX)
+}
+
+pub fn seal_path(id: &str) -> ObjPath {
+    ObjPath::from(format!("{SEAL_PREFIX}/{}.json", hash_name(id)))
+}
+
+pub fn holdout_prefix() -> ObjPath {
+    ObjPath::from(HOLDOUT_PREFIX)
+}
+
+pub fn holdout_path(seal_id: &str) -> ObjPath {
+    ObjPath::from(format!("{HOLDOUT_PREFIX}/{}.json", hash_name(seal_id)))
+}
+
+pub fn service_effect_prefix() -> ObjPath {
+    ObjPath::from(format!("{SERVICE_PREFIX}/effects"))
+}
+
+pub fn service_effect_path(key: &str) -> ObjPath {
+    ObjPath::from(format!("{SERVICE_PREFIX}/effects/{}.json", hash_name(key)))
+}
+
+pub fn service_promote_journal_prefix() -> ObjPath {
+    ObjPath::from(format!("{SERVICE_PREFIX}/promote-journal"))
+}
+
+pub fn service_promote_journal_path(id: &str) -> ObjPath {
+    ObjPath::from(format!(
+        "{SERVICE_PREFIX}/promote-journal/{}.json",
+        hash_name(id)
+    ))
 }
 
 pub fn fork_catalog_entry_path(fork_name: &str, table_name: &str) -> ObjPath {

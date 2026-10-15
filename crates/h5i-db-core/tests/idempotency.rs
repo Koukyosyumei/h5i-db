@@ -214,3 +214,71 @@ async fn the_key_is_recorded_on_the_commit_it_created() {
         Some("visible")
     );
 }
+
+fn fingerprinted(key: &str, fingerprint: &str) -> WriteOptions {
+    WriteOptions {
+        idempotency_key: Some(key.to_string()),
+        idempotency_fingerprint: Some(fingerprint.to_string()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn the_same_key_and_fingerprint_replay_and_a_different_fingerprint_conflicts() {
+    let (_dir, db) = setup().await;
+    let first = db
+        .append(
+            "trades",
+            vec![batch(&[1], &[10.0])],
+            fingerprinted("k", "fp-a"),
+        )
+        .await
+        .unwrap();
+    let replay = db
+        .append(
+            "trades",
+            vec![batch(&[1], &[10.0])],
+            fingerprinted("k", "fp-a"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.sequence, first.sequence);
+    assert_eq!(row_count(&db).await, 1);
+
+    let err = db
+        .append(
+            "trades",
+            vec![batch(&[9], &[90.0])],
+            fingerprinted("k", "fp-b"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, h5i_db_core::Error::IdempotencyConflict { .. }),
+        "{err}"
+    );
+    assert!(!err.retryable());
+    assert_eq!(err.code(), "idempotency_conflict");
+    assert_eq!(row_count(&db).await, 1);
+}
+
+#[tokio::test]
+async fn a_fingerprint_does_not_match_a_key_that_recorded_none() {
+    let (_dir, db) = setup().await;
+    db.append("trades", vec![batch(&[1], &[10.0])], keyed("legacy"))
+        .await
+        .unwrap();
+    let err = db
+        .append(
+            "trades",
+            vec![batch(&[1], &[10.0])],
+            fingerprinted("legacy", "later"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, h5i_db_core::Error::IdempotencyConflict { .. }),
+        "{err}"
+    );
+    assert_eq!(row_count(&db).await, 1);
+}

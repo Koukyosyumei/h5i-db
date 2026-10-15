@@ -176,7 +176,9 @@ fn to_py_err(e: Error) -> PyErr {
         | "unsupported"
         | "schema_mismatch"
         | "sort_order_violation"
-        | "data_policy_violation" => InvalidInputError::new_err(msg),
+        | "data_policy_violation"
+        | "idempotency_conflict" => InvalidInputError::new_err(msg),
+        "holdout_used" => PolicyError::new_err(msg),
         "read_only" | "policy_violation" => PolicyError::new_err(msg),
         "corruption" | "format_too_new" => CorruptionError::new_err(msg),
         "limit_exceeded" => LimitError::new_err(msg),
@@ -614,6 +616,7 @@ impl NativeDatabase {
             note,
             user_meta: serde_json::Map::new(),
             idempotency_key,
+            idempotency_fingerprint: None,
         };
         let name = name.to_string();
         let result = match mode {

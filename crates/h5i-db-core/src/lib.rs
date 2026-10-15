@@ -22,6 +22,8 @@ pub mod manifest;
 pub mod plan;
 pub mod policy;
 pub mod retention;
+pub mod scope;
+pub mod seal;
 pub mod segment;
 pub mod snapshot;
 pub mod spec;
@@ -33,8 +35,9 @@ pub use backend::{Backend, HeadState, HeadStore, HeadTag, MetaLockGuard};
 pub use backend_object::ObjectStoreHeadStore;
 pub use data_policy::{CmpOp, Constraint, DataPolicy, OnFail, Predicate, ScalarLit};
 pub use database::{
-    CommitResult, Database, IDEMPOTENCY_LOOKBACK, IDEMPOTENCY_META_KEY, ReadAt, ResolvedTable,
-    ScanOptions, ScanReport, VacuumReport, VerifyReport, VersionSummary, WriteOptions,
+    CommitResult, Database, IDEMPOTENCY_FINGERPRINT_META_KEY, IDEMPOTENCY_LOOKBACK,
+    IDEMPOTENCY_META_KEY, ReadAt, ResolvedTable, ScanOptions, ScanReport, VacuumReport,
+    VerifyReport, VersionSummary, WriteOptions,
 };
 pub use error::{Error, ExitCategory, NextAction, Result, nearest_name};
 pub use fork::{
@@ -46,6 +49,13 @@ pub use manifest::{ColumnStats, Head, OpKind, SegmentMeta, VersionManifest};
 pub use plan::{MutationPlan, PlanSummary};
 pub use policy::MutationPolicy;
 pub use retention::{RetentionCut, RetentionFloor};
+pub use scope::{
+    Enforcement, HoldoutGrant, ReadScope, SealSpan, TimeSpan, Visibility, filter_record_batch,
+    row_visible, segment_fully_visible, segment_hidden,
+};
+pub use seal::{
+    HoldoutOpen, HoldoutRecord, HoldoutRequest, HoldoutSession, Seal, SealCache, SealRequest,
+};
 pub use snapshot::{Snapshot, SnapshotEntry};
 pub use spec::{Codec, StorageOptions, TableOptions, TableSpec};
 pub use tail::{TailEvent, TailStream};

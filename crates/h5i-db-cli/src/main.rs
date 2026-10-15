@@ -96,6 +96,7 @@ impl WriteFlags {
             note: self.note.clone(),
             user_meta: serde_json::Map::new(),
             idempotency_key: self.idempotency_key.clone(),
+            idempotency_fingerprint: None,
         }
     }
 }
