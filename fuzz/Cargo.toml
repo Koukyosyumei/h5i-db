@@ -37,6 +37,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "scope_visibility"
+path = "fuzz_targets/scope_visibility.rs"
+test = false
+doc = false
+bench = false
+
 # Detach from the workspace: fuzz builds use nightly + sanitizer flags and
 # must not inherit the workspace's `panic = "abort"` release profile.
 [workspace]

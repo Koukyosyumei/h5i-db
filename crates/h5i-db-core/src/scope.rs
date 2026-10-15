@@ -426,4 +426,44 @@ mod tests {
         assert_eq!(ns_to_unit_ceil(-1, TimeUnit::Microsecond).unwrap(), 0);
         assert_eq!(ns_to_unit_floor(-1, TimeUnit::Microsecond).unwrap(), -1);
     }
+
+    #[test]
+    fn seeded_rows_never_cross_a_ceiling_or_a_hole() {
+        let mut state: u64 = 0x5eed_5c0e;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            state
+        };
+        for _ in 0..256 {
+            let ceiling = next() as i64;
+            let use_ceiling = next() % 2 == 0;
+            let hole_start = next() as i64;
+            let hole_end = hole_start.saturating_add((next() % 1_000) as i64);
+            let vis = vis(use_ceiling.then_some(ceiling), vec![(hole_start, hole_end)]);
+            for _ in 0..16 {
+                let raw = next() as i64;
+                let visible = row_visible(raw, &vis);
+                if use_ceiling && raw > ceiling {
+                    assert!(!visible, "row {raw} passed ceiling {ceiling}");
+                }
+                if hole_start < hole_end && raw >= hole_start && raw < hole_end {
+                    assert!(!visible, "row {raw} passed hole [{hole_start}, {hole_end})");
+                }
+            }
+            let min = next() as i64;
+            let max = min.saturating_add((next() % 64) as i64);
+            if segment_hidden(Some((min, max)), &vis) {
+                assert!(!row_visible(min, &vis));
+                assert!(!row_visible(max, &vis));
+                let mid = min.saturating_add(max.saturating_sub(min) / 2);
+                assert!(!row_visible(mid, &vis));
+            }
+            if segment_fully_visible(Some((min, max)), &vis) {
+                assert!(row_visible(min, &vis));
+                assert!(row_visible(max, &vis));
+            }
+        }
+    }
 }
