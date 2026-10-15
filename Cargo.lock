@@ -2212,6 +2212,7 @@ name = "h5i-db-cli"
 version = "0.1.6"
 dependencies = [
  "arrow",
+ "blake3",
  "bytes",
  "chrono",
  "clap",
@@ -2221,6 +2222,7 @@ dependencies = [
  "h5i-db-core",
  "h5i-db-notebook",
  "h5i-db-query",
+ "h5i-db-service",
  "h5i-db-ui",
  "humantime",
  "parquet",

@@ -866,6 +866,7 @@ Every mutating service call takes an idempotency key.
 - Table writes also store the key and the fingerprint in manifest `user_meta`. A retry that lost the service record still finds the commit. A fingerprint that does not match is `idempotency_conflict`, including the case where an older commit recorded the key and no fingerprint: absence is not a match.
 - The 64-commit lookback still bounds the manifest scan. The service effect log does not have that bound: it is one object per key (`service/effects/<blake3(key)>.json`), written after the engine commit and consulted first.
 - Replay inside a fork reads that fork's own table. A name that is still only a pin has no fork commit, so a key that landed on the base is not a replay of the fork write.
+- The CLI sets `idempotency_fingerprint` when `--idempotency-key` is present. The fingerprint covers the operation, the table, the expected version, the note, and the input bytes. The same key with a different file is `idempotency_conflict`. Without a key the fingerprint stays unset and replay stays key-only.
 - Fork create stores the key in the fork's `user_meta`. `ForkExists` on retry resolves to the first fork when the fingerprint matches.
 - Promote stores enough in the base manifest's existing `h5i.forked_from` meta that a retry of the same fork table returns the first `PromoteResult` instead of `PromoteConflict`.
 
