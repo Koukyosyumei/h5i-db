@@ -282,3 +282,28 @@ async fn a_fingerprint_does_not_match_a_key_that_recorded_none() {
     );
     assert_eq!(row_count(&db).await, 1);
 }
+
+#[tokio::test]
+async fn a_fork_does_not_replay_a_key_that_landed_on_the_base() {
+    let (_dir, db) = setup().await;
+    db.append("trades", vec![batch(&[1], &[10.0])], keyed("shared"))
+        .await
+        .unwrap();
+    let base_rows = row_count(&db).await;
+    db.create_fork("agent", None, None, serde_json::Map::new())
+        .await
+        .unwrap();
+    let fork = db.open_fork("agent").await.unwrap();
+    let written = fork
+        .append("trades", vec![batch(&[2], &[20.0])], keyed("shared"))
+        .await
+        .unwrap();
+    assert_eq!(written.rows_total, base_rows + 1);
+    assert_eq!(row_count(&db).await, base_rows);
+    let replay = fork
+        .append("trades", vec![batch(&[2], &[20.0])], keyed("shared"))
+        .await
+        .unwrap();
+    assert_eq!(replay.sequence, written.sequence);
+    assert_eq!(row_count(&fork).await, base_rows + 1);
+}

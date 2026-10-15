@@ -1628,6 +1628,13 @@ impl Database {
             return Ok(None);
         };
         let entry = self.entry(name).await?;
+        // A name that still resolves to a pin has no fork-owned commit. Scanning
+        // the pinned base would treat one of its writes as this fork's replay.
+        if let Some(fork) = &self.fork
+            && fork.pin(entry.table_id).is_some()
+        {
+            return Ok(None);
+        }
         let head = self.head(name, entry.table_id).await?.head.sequence;
         let floor = head
             .saturating_sub(IDEMPOTENCY_LOOKBACK)
