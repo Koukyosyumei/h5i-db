@@ -21,7 +21,7 @@ use datafusion::catalog::{TableFunctionArgs, TableFunctionImpl, TableProvider};
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::scalar::ScalarValue;
-use h5i_db_core::{Database, ReadAt, SegmentMeta};
+use h5i_db_core::{Database, ReadAt, SegmentMeta, Visibility, filter_record_batch, segment_hidden};
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 
@@ -238,6 +238,14 @@ impl LatestByStore {
             }
         }
 
+        let enforcement = self
+            .db
+            .enforcement(table, schema.as_ref(), Some(time_col.as_str()))?;
+        // A scoped reduction is not the unscoped one: the sidecar has no scope
+        // in its key, so a restricted handle neither reads nor writes it.
+        // Filtering after `last_row_per_group` would hide the visible row
+        // behind a later one the handle cannot see.
+        let restrictive = enforcement.is_some();
         let mut metrics = LatestByMetrics {
             segments_total: resolved.manifest.segments.len(),
             ..Default::default()
@@ -246,8 +254,13 @@ impl LatestByStore {
         let mut minis: Vec<RecordBatch> = Vec::with_capacity(resolved.manifest.segments.len());
 
         for segment in &resolved.manifest.segments {
+            if let Some(enf) = &enforcement
+                && segment_hidden(segment.time_range, &enf.visibility)
+            {
+                continue;
+            }
             let path = latest_path(segment, by_column);
-            let cached = if self.mode != LatestByMode::Disabled {
+            let cached = if !restrictive && self.mode != LatestByMode::Disabled {
                 self.load(&path, segment, by_column, &schema, &mut metrics)
                     .await
             } else {
@@ -260,19 +273,29 @@ impl LatestByStore {
                 }
                 None => {
                     let mini = self
-                        .build(segment, &projection, &schema, time_idx, group_idx)
+                        .build(
+                            segment,
+                            &projection,
+                            &schema,
+                            time_idx,
+                            group_idx,
+                            &time_col,
+                            enforcement.as_ref().map(|enf| &enf.visibility),
+                        )
                         .await?;
                     metrics.states_built += 1;
                     metrics.segments_scanned += 1;
                     metrics.rows_scanned += segment.rows;
-                    if self.mode == LatestByMode::ReadWrite {
+                    if !restrictive && self.mode == LatestByMode::ReadWrite {
                         self.try_store(&path, segment, by_column, &mini, &mut metrics)
                             .await;
                     }
                     mini
                 }
             };
-            minis.push(mini);
+            if mini.num_rows() > 0 {
+                minis.push(mini);
+            }
         }
 
         let result = if minis.is_empty() {
@@ -311,12 +334,21 @@ impl LatestByStore {
         schema: &SchemaRef,
         time_idx: usize,
         group_idx: usize,
+        time_col: &str,
+        visibility: Option<&Visibility>,
     ) -> h5i_db_core::Result<RecordBatch> {
         let batches =
             h5i_db_core::segment::read_segment(self.db.backend(), segment, Some(projection), None)
                 .await?;
         let combined = arrow::compute::concat_batches(schema, &batches)
             .map_err(|e| h5i_db_core::Error::invalid(format!("latest_on segment concat: {e}")))?;
+        let combined = match visibility {
+            Some(vis) => filter_record_batch(&combined, time_col, vis)?,
+            None => combined,
+        };
+        if combined.num_rows() == 0 {
+            return Ok(RecordBatch::new_empty(schema.clone()));
+        }
         last_row_per_group(&combined, time_idx, group_idx, schema)
             .map_err(|e| h5i_db_core::Error::invalid(format!("latest_on build: {e}")))
     }
@@ -408,7 +440,6 @@ impl TableFunctionImpl for LatestByFunc {
         let table = string_arg(args, 0, "the table name")?;
         let by_column = string_arg(args, 1, "the group column")?;
         let store = LatestByStore::new(self.db.clone(), self.mode);
-        self.pin.check_usable("latest_on")?;
         let (batch, _metrics) = block_on(store.latest_by(&table, self.pin.read_at(), &by_column))
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
         let schema = batch.schema();

@@ -14,11 +14,11 @@
 //!   read point instead of the head, so `--as-of` holds everywhere and the
 //!   operators stay usable. Asking a table function for a *different* read
 //!   point inside a pinned session is refused rather than silently honoured.
-//! * **Event-time axis refuses.** These functions consume their tables
-//!   internally rather than returning something the cutoff predicate can be
-//!   pushed into, so under `--decision-time` they fail with an error naming
-//!   the alternative. Enforcing it for some and not others would leave exactly
-//!   the kind of quiet hole this module exists to close.
+//! * **Event-time axis is applied by the handle.** The session copies the
+//!   cutoff onto the [`Database`](h5i_db_core::Database) before these functions
+//!   are built, and each scan enforces that ceiling. `tail()` is the exception:
+//!   it follows the head, so a cutoff or a seal refuses it instead of clipping
+//!   a live stream.
 
 use datafusion::error::{DataFusionError, Result as DfResult};
 use h5i_db_core::ReadAt;

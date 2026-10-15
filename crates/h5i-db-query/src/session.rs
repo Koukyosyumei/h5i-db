@@ -158,6 +158,13 @@ impl H5iSession {
             at,
             event_time_cutoff_ns,
         } = research_pin.clone();
+        // The cutoff becomes a handle ceiling before any provider or table
+        // function is built. Catalog views stay as a second filter; the scan
+        // itself is what seals and `latest_on` cannot see past.
+        let db = match event_time_cutoff_ns {
+            Some(ns) => Arc::new(db.with_event_ceiling(ns)),
+            None => db,
+        };
         let telemetry = WorkloadTelemetryBuffer::new(options.telemetry_capacity);
         let predicate_cache_mode = options.predicate_cache;
         let mut config = SessionConfig::new().with_information_schema(true);
@@ -211,6 +218,7 @@ impl H5iSession {
         for resolved in resolve_all_at(&db, at.clone()).await? {
             registered.insert(register_resolved_table(
                 &ctx,
+                &db,
                 &url,
                 &metrics,
                 db.backend(),
@@ -345,6 +353,7 @@ impl H5iSession {
             .into_iter()
             .map(|r| {
                 prepare_resolved_table(
+                    &self.db,
                     &self.url,
                     &self.metrics,
                     self.db.backend(),
@@ -446,7 +455,8 @@ impl H5iSession {
         let schema = resolved.schema.clone();
         let provider = Arc::new(
             H5iTableProvider::new(resolved, self.url.clone(), self.metrics.clone())
-                .with_predicate_cache(self.db.backend().clone(), self.predicate_cache_mode),
+                .with_predicate_cache(self.db.backend().clone(), self.predicate_cache_mode)
+                .with_database(Arc::clone(&self.db)),
         );
         match self.pin.event_time_cutoff_ns {
             Some(cutoff_ns) => self.ctx.read_table(embargoed_view(
@@ -989,6 +999,7 @@ fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// be separate copies, and the copy in `refresh` had quietly lost the embargo.
 fn register_resolved_table(
     ctx: &SessionContext,
+    db: &Arc<Database>,
     url: &ObjectStoreUrl,
     metrics: &ScanMetricsCollector,
     backend: &h5i_db_core::Backend,
@@ -997,6 +1008,7 @@ fn register_resolved_table(
     resolved: ResolvedTable,
 ) -> DfResult<String> {
     let (name, provider) = prepare_resolved_table(
+        db,
         url,
         metrics,
         backend,
@@ -1016,6 +1028,7 @@ fn register_resolved_table(
 /// catalog, so a table it cannot build refuses the refresh rather than leaving
 /// it half applied.
 fn prepare_resolved_table(
+    db: &Arc<Database>,
     url: &ObjectStoreUrl,
     metrics: &ScanMetricsCollector,
     backend: &h5i_db_core::Backend,
@@ -1028,7 +1041,8 @@ fn prepare_resolved_table(
     let schema = resolved.schema.clone();
     let provider = Arc::new(
         H5iTableProvider::new(resolved, url.clone(), metrics.clone())
-            .with_predicate_cache(backend.clone(), predicate_cache_mode),
+            .with_predicate_cache(backend.clone(), predicate_cache_mode)
+            .with_database(Arc::clone(db)),
     );
     let provider: Arc<dyn datafusion::datasource::TableProvider> = match event_time_cutoff_ns {
         // Put the table behind a view carrying the cutoff, so the predicate is
