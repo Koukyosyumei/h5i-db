@@ -15,12 +15,14 @@ members = [
     "crates/h5i-db-backtest",
     "crates/h5i-db-venues",
     "crates/h5i-db-notebook",
+    "crates/h5i-db-service",
 ]
 default-members = [
     "crates/h5i-db-core",
     "crates/h5i-db-query",
     "crates/h5i-db-cli",
     "crates/h5i-db-ui",
+    "crates/h5i-db-service",
 ]
 
 [workspace.package]
@@ -41,6 +43,7 @@ h5i-db-query = { path = "crates/h5i-db-query", version = "0.1.6" }
 h5i-db-notebook = { path = "crates/h5i-db-notebook", version = "0.1.6" }
 h5i-db-observability = { path = "crates/h5i-db-observability", version = "0.1.6" }
 h5i-db-backtest = { path = "crates/h5i-db-backtest", version = "0.1.6" }
+h5i-db-service = { path = "crates/h5i-db-service", version = "0.1.6" }
 h5i-db-venues = { path = "crates/h5i-db-venues", version = "0.1.6" }
 
 # arrow/parquet must match the versions datafusion 54.1 links against (58.x).

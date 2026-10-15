@@ -865,6 +865,7 @@ Every mutating service call takes an idempotency key.
 - The same key and a different fingerprint is `idempotency_conflict` (not retryable).
 - Table writes also store the key and the fingerprint in manifest `user_meta`. A retry that lost the service record still finds the commit. A fingerprint that does not match is `idempotency_conflict`, including the case where an older commit recorded the key and no fingerprint: absence is not a match.
 - The 64-commit lookback still bounds the manifest scan. The service effect log does not have that bound: it is one object per key (`service/effects/<blake3(key)>.json`), written after the engine commit and consulted first.
+- Replay inside a fork reads that fork's own table. A name that is still only a pin has no fork commit, so a key that landed on the base is not a replay of the fork write.
 - Fork create stores the key in the fork's `user_meta`. `ForkExists` on retry resolves to the first fork when the fingerprint matches.
 - Promote stores enough in the base manifest's existing `h5i.forked_from` meta that a retry of the same fork table returns the first `PromoteResult` instead of `PromoteConflict`.
 
@@ -874,9 +875,9 @@ Every mutating service call takes an idempotency key.
 
 | Call | The `v` it names | On mismatch |
 |---|---|---|
-| Ingest (`append`, `write`, `replace_range`) | Head sequence of the fork table the write will land on | `version_conflict` |
+| Ingest (`append`, `write`, `replace_range`) and plan | Head sequence of the table the write will land on. Inside a fork that is the shadow head. Before the shadow exists, the next write compare-and-swaps against sequence 0 (a copy of the pinned manifest), not the pinned base sequence. `Handle::table_head` reports that 0. | `version_conflict` |
 | Apply | The plan's `base_version` (and the plan checksum the apply path already checks) | `version_conflict` |
-| Promote | The base sequence the fork pinned | `promote_conflict`, unless the base manifest is already the promotion of this fork table (§14.3) |
+| Promote | The base sequence the fork pinned (`ForkPin.sequence`). This is not the shadow head from the ingest row. | `promote_conflict`, unless the base manifest is already the promotion of this fork table (§14.3) |
 
 What is atomic, what a reader can observe, and what a crash leaves:
 
@@ -923,3 +924,4 @@ Public CLI flags, Python methods, and the on-disk format of existing objects sta
 - A second `promote` of a fork table that already promoted returns the first result instead of `PromoteConflict` when the base version is that promotion. A later conflicting write still conflicts.
 - With a decision-time ceiling set, `asof_join` and the other table functions run against clipped providers instead of refusing the cutoff. An unpinned session is unchanged.
 - Backtests gain a `bt_trial` table. Readers that listed a fixed set of `bt_*` names will see one more.
+- A plan inside a fork is stored on the fork-owned shadow. The first plan materializes that shadow (sequence 0, the pinned manifest copied) and apply publishes the shadow, not the base. Listing plans for a name that is still only a pin returns an empty list, so a fork cannot apply a plan that belongs to the base table.

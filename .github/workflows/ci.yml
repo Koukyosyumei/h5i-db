@@ -46,7 +46,7 @@ jobs:
       # committed golden fixture (tests/fixtures/golden-v1) read-only — the
       # on-disk format-compatibility gate. A format break fails CI here.
       - run: |
-          for pkg in h5i-db-core h5i-db-query h5i-db-cli h5i-db-ui; do
+          for pkg in h5i-db-core h5i-db-query h5i-db-cli h5i-db-ui h5i-db-service; do
             cargo test -p $pkg -- --test-threads=2
           done
       # The notebook, on its own line and single-threaded: every test here
