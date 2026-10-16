@@ -79,21 +79,25 @@ board = backtest.study(
 
 ---
 
-## 2. Web UI
+## 2. Research lab
+
+`apps/lab` is a ledger for one person running many agents against one database. An agent submits a strategy as a short rule program with JSON parameters. A worker backtests it on the agent's fork through the service API and records the trial whether the run succeeded or not. The protocol is an h5i-app kernel with Lean proofs: every trial is counted, an agent cannot read past its decision time or into the sealed holdout, the holdout is evaluated once, and only a human promotes.
 
 ```bash
-h5i-db ui market.db                     # loopback only, read-only by default
-h5i-db ui market.db --allow-mutations   # also apply or discard pending plans
+apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
+apps/lab/demo.sh down
 ```
 
 <p align="center">
-  <img src="./docs/_static/backtest-ui.png" alt="h5i-db review UI: an experiment's leaderboard of backtest trials" width="99%" />
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
 </p>
 
-- **Experiments:** trials grouped by study, with leaderboard, by-parameter and compare views. Attention order is: needs a decision, then failed or warned, then finished and unseen, then running. A trial counts as seen only when you open it.
-- **Forks:** a live tree of every fork, showing what it wrote, whether it is ahead of its base, and whether a promote would conflict.
-- **History and plans:** the version timeline with audit badges, version diffs, and agent writes waiting as previewable plans.
-- **SQL:** a scratchpad that reports how many segments each query pruned.
+- **Review queue:** frozen strategies with their code, parameters, equity curve, costs and holdout result, to promote, reject or comment on.
+- **Leaderboard:** families ranked by deflated Sharpe, which drops as a family tries more variants. Raw returns stay on the trials.
+- **Trials:** every counted run with return, max drawdown, Sharpe, fills, costs and an equity sparkline, all from the engine's fills.
+- **Alerts:** reads past a decision time, refused backtests, a spent holdout.
+
+On your own data the lab needs PostgreSQL and an h5i-db database with an instruments catalog, book snapshots and a seal over the holdout span. [apps/lab/README.md](apps/lab/README.md) lists the settings, the strategy language and what the proofs cover.
 
 ---
 

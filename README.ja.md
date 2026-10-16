@@ -79,21 +79,25 @@ board = backtest.study(
 
 ---
 
-## 2. Web UI
+## 2. リサーチラボ
+
+`apps/lab` は、ひとりの人間が多数のエージェントをひとつのデータベースに対して走らせるための台帳です。エージェントは戦略を短いルールプログラムとJSONパラメータとして提出します。ワーカーがそれをサービスAPI経由でエージェントのforkでバックテストし、実行が成功しても失敗しても試行として記録します。プロトコルはLeanで証明されたh5i-appカーネルです。すべての試行が数えられ、エージェントは登録した判断時刻より後のデータや封印されたホールドアウトを読めず、ホールドアウトの評価は一度きりで、promoteできるのは人間だけです。
 
 ```bash
-h5i-db ui market.db                     # loopback only, read-only by default
-h5i-db ui market.db --allow-mutations   # also apply or discard pending plans
+apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
+apps/lab/demo.sh down
 ```
 
 <p align="center">
-  <img src="./docs/_static/backtest-ui.png" alt="h5i-db review UI: an experiment's leaderboard of backtest trials" width="99%" />
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
 </p>
 
-- **Experiments:** 試行をスタディごとにまとめ、リーダーボード、パラメータ別、比較の各ビューで見られます。並び順は、判断待ち、失敗または警告、終了して未確認、実行中の順です。一覧を眺めただけでは確認済みにならず、詳細を開いて初めて確認済みになります。
-- **Forks:** すべてのforkをライブで更新されるツリーで表示します。何を書いたか、ベースより進んでいるか、promoteが衝突するかがわかります。
-- **履歴とプラン:** 監査バッジ付きのバージョン履歴、バージョン間の差分、そしてプレビュー可能なプランとして待機しているエージェントの書き込み。
-- **SQL:** クエリごとに、いくつのセグメントを読み飛ばせたかを表示するスクラッチパッド。
+- **レビューキュー:** 凍結された戦略を、コード、パラメータ、エクイティカーブ、コスト、ホールドアウトの結果とともに表示し、promote、却下、コメントができます。
+- **リーダーボード:** ファミリーをデフレーテッド・シャープ・レシオで順位付けします。この値はファミリーが試す変種が増えるほど下がります。生のリターンは試行の側にだけ表示されます。
+- **試行:** 数えられたすべての実行について、リターン、最大ドローダウン、シャープ・レシオ、約定数、コスト、エクイティのスパークラインを表示します。どれもエンジンの約定から計算した値です。
+- **アラート:** 判断時刻より後の読み取り、拒否されたバックテスト、使用済みのホールドアウト。
+
+自分のデータで動かすには、PostgreSQLと、銘柄カタログ、板のスナップショット、ホールドアウト期間の封印を持つh5i-dbデータベースが必要です。設定、戦略言語、証明の範囲は [apps/lab/README.md](apps/lab/README.md) にあります。
 
 ---
 

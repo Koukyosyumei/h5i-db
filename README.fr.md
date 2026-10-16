@@ -79,21 +79,25 @@ board = backtest.study(
 
 ---
 
-## 2. Interface web
+## 2. Laboratoire de recherche
+
+`apps/lab` est un registre pour une personne qui fait tourner de nombreux agents sur une même base. Un agent soumet une stratégie sous la forme d'un court programme de règles avec des paramètres JSON. Un worker la backteste sur le fork de l'agent via l'API de service et enregistre l'essai, que l'exécution ait réussi ou non. Le protocole est un noyau h5i-app prouvé en Lean : chaque essai est compté, un agent ne peut lire ni au-delà de son instant de décision ni dans le holdout scellé, le holdout n'est évalué qu'une fois, et seul un humain fait un promote.
 
 ```bash
-h5i-db ui market.db                     # loopback only, read-only by default
-h5i-db ui market.db --allow-mutations   # also apply or discard pending plans
+apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
+apps/lab/demo.sh down
 ```
 
 <p align="center">
-  <img src="./docs/_static/backtest-ui.png" alt="h5i-db review UI: an experiment's leaderboard of backtest trials" width="99%" />
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
 </p>
 
-- **Expériences :** essais regroupés par étude, avec des vues classement, par paramètre et comparaison. L'ordre d'attention est : demande une décision, puis échoué ou avec avertissement, puis terminé et non vu, puis en cours. Un essai ne compte comme vu que lorsque vous l'ouvrez.
-- **Forks :** un arbre en direct de tous les forks, qui montre ce que chacun a écrit, s'il est en avance sur sa base, et si un promote entrerait en conflit.
-- **Historique et plans :** la chronologie des versions avec badges d'audit, les différences entre versions, et les écritures d'agents en attente sous forme de plans prévisualisables.
-- **SQL :** un brouillon qui indique combien de segments chaque requête a écartés.
+- **File de revue :** les stratégies gelées avec leur code, leurs paramètres, leur courbe de capital, leurs coûts et le résultat du holdout, à promouvoir, rejeter ou commenter.
+- **Classement :** les familles classées par Sharpe dégonflé, qui baisse à mesure qu'une famille essaie plus de variantes. Les rendements bruts restent sur les essais.
+- **Essais :** chaque exécution comptée avec rendement, drawdown maximal, Sharpe, exécutions d'ordres, coûts et une mini-courbe du capital, tous tirés des exécutions du moteur.
+- **Alertes :** lectures au-delà d'un instant de décision, backtests refusés, holdout déjà utilisé.
+
+Sur vos propres données, le laboratoire a besoin de PostgreSQL et d'une base h5i-db avec un catalogue d'instruments, des instantanés du carnet d'ordres et un scellé sur la période de holdout. [apps/lab/README.md](apps/lab/README.md) décrit la configuration, le langage de stratégies et ce que couvrent les preuves.
 
 ---
 

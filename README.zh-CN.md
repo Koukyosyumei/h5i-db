@@ -79,21 +79,25 @@ board = backtest.study(
 
 ---
 
-## 2. Web 界面
+## 2. 研究实验室
+
+`apps/lab` 是一个账本，供一个人让许多智能体在同一个数据库上做研究。智能体以一段简短的规则程序加 JSON 参数提交策略。工作进程通过服务 API 在该智能体的 fork 上回测它，无论运行成功与否都记为一次试验。协议是一个用 Lean 证明的 h5i-app 内核：每次试验都会计数，智能体无法读取其登记的决策时间之后的数据，也无法读取封存的留出集，留出集只评估一次，只有人类可以 promote。
 
 ```bash
-h5i-db ui market.db                     # loopback only, read-only by default
-h5i-db ui market.db --allow-mutations   # also apply or discard pending plans
+apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
+apps/lab/demo.sh down
 ```
 
 <p align="center">
-  <img src="./docs/_static/backtest-ui.png" alt="h5i-db review UI: an experiment's leaderboard of backtest trials" width="99%" />
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
 </p>
 
-- **实验：** 试验按研究分组，提供排行榜、按参数和对比三种视图。关注顺序是：需要决策，然后是失败或有警告，然后是已完成但未查看，最后是运行中。只有打开过的试验才算已查看。
-- **Fork：** 所有 fork 的实时树，显示每个 fork 写了什么、是否领先于它的基准，以及 promote 时是否会冲突。
-- **历史与计划：** 带审计徽章的版本时间线、版本差异，以及以可预览计划形式等待处理的智能体写入。
-- **SQL：** 一个草稿区，会报告每条查询剪除了多少个段。
+- **审阅队列：** 已冻结的策略，附带代码、参数、权益曲线、成本和留出集结果，可以 promote、拒绝或评论。
+- **排行榜：** 按收缩夏普比率（deflated Sharpe）给策略族排名；一个策略族尝试的变体越多，这个值越低。原始收益只显示在试验上。
+- **试验：** 每次计数的运行，包含收益、最大回撤、夏普比率、成交笔数、成本和权益迷你曲线，全部来自引擎的成交。
+- **告警：** 越过决策时间的读取、被拒绝的回测、已用掉的留出集。
+
+在自己的数据上运行时，实验室需要 PostgreSQL 和一个 h5i-db 数据库，其中有标的目录、订单簿快照，以及覆盖留出区间的封存。配置、策略语言和证明覆盖的范围见 [apps/lab/README.md](apps/lab/README.md)。
 
 ---
 
