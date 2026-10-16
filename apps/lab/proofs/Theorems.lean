@@ -15,13 +15,13 @@ attribute [simp] u64_val_eq u64_bne
 @[step] theorem two_spec (a b : Write) : two a b ⦃ v => v.val = [a, b] ⦄ := by
   unfold two; step*
 
-@[step] theorem four_spec (a b c d : Write) : four a b c d ⦃ v => v.val = [a, b, c, d] ⦄ := by
-  unfold four
+@[step] theorem five_spec (a b c d e : Write) : five a b c d e ⦃ v => v.val = [a, b, c, d, e] ⦄ := by
+  unfold five
   step*
-  have hlen : ws2.val.length = 3 := by
-    simp only [ws2_post, ws1_post, ws_post, alloc.vec.Vec.from_val, List.length_append,
-      List.length_singleton, List.nil_append]
-  exact usize_lt_max (by simp [hlen])
+  · exact usize_lt_max (by simp [ws2_post, ws1_post, ws_post])
+  · have hlen : ws3.val.length = 4 := by simp [ws3_post, ws2_post, ws1_post, ws_post]
+    exact usize_lt_max (by simp [hlen])
+  · simp [v_post, ws3_post, ws2_post, ws1_post, ws_post]
 
 @[step] theorem find_agent_spec (v : alloc.vec.Vec Agent) (id : U64) :
     find_agent v id ⦃ o => o = v.val.find? (fun a => a.id.val = id.val) ⦄ := by
@@ -47,13 +47,55 @@ attribute [simp] u64_val_eq u64_bne
   · intro r hr; rw [search_find _ _ _ hr]; simp
   · intro j hj; unfold find_pending_loop.body; h5i_step
 
+@[step] theorem find_trial_spec (v : alloc.vec.Vec Trial) (id : U64) :
+    find_trial v id ⦃ o => o = v.val.find? (fun t => t.id.val = id.val) ⦄ := by
+  unfold find_trial find_trial_loop
+  apply WP.spec_mono (loop_search v.val (fun t => decide (t.id = id)) (fun o : Option Trial => o)
+    (fun _ t => some t) none _ ?_ 0#usize (by simp))
+  · intro r hr; rw [search_find _ _ _ hr]; simp
+  · intro j hj; unfold find_trial_loop.body; h5i_step
+
+@[step] theorem find_text_spec (v : alloc.vec.Vec Text) (kind : U64) (body : alloc.vec.Vec U8) :
+    find_text v kind body ⦃ o =>
+      o = (v.val.find? (fun t => decide (t.kind = kind ∧ t.body = body))).map (fun t => t.id) ⦄ := by
+  unfold find_text find_text_loop
+  apply WP.spec_mono (loop_search v.val (fun t => decide (t.kind = kind ∧ t.body = body))
+    (fun o : Option U64 => o) (fun _ t => some t.id) none _ ?_ 0#usize (by simp))
+  · intro r hr
+    rw [hr, searchFrom_find, UScalar.ofNatCore_val_eq, List.drop_zero]
+  · intro j hj; unfold find_text_loop.body; h5i_step
+
+/-- The id `intern` returns names a text of that kind with exactly that body:
+either a row already in the ledger, or the new row it returns to be written
+at `next`. So the code, parameters, and hypothesis a pending or family row
+points to are the bytes the agent submitted. -/
+theorem intern_names_the_text (v : alloc.vec.Vec Text) (kind : U64)
+    (nm body : alloc.vec.Vec U8) (next : U64) :
+    intern v kind nm body next ⦃ r => ∀ id row n, r = .Ok (id, row, n) →
+      (row = none ∧ n = next ∧ ∃ t ∈ v.val, t.id = id ∧ t.kind = kind ∧ t.body = body) ∨
+      (id = next ∧ row = some { id := next, kind := kind, «name» := nm, body := body }) ⦄ := by
+  unfold intern
+  step*
+  · simp only [core.num.U64.MAX, U64.rMax] at *; scalar_tac
+  · intro i0 row n hr
+    simp only [core.result.Result.Ok.injEq, Prod.mk.injEq] at hr
+    obtain ⟨rfl, rfl, rfl⟩ := hr
+    refine Or.inl ⟨rfl, rfl, ?_⟩
+    rename_i hsome
+    rw [hsome, eq_comm, Option.map_eq_some_iff] at o_post
+    obtain ⟨t, ht, hid⟩ := o_post
+    have hp := List.find?_some ht
+    simp only [decide_eq_true_eq] at hp
+    exact ⟨t, List.mem_of_find?_eq_some ht, hid, hp.1, hp.2⟩
+
 /-- An agent cannot record a trial. Only the worker can, so a failed trial
 cannot be dropped by never reporting it. -/
 theorem record_requires_worker
     (actor : Principal) (s : Snapshot)
     (pending data_version score corrected sharpe skew kurt samples tokens : U64)
+    (curve : alloc.vec.Vec U8)
     (h : actor.role ≠ ROLE_WORKER) :
-    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens =
+    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens curve =
       ok (.Err .Forbidden) := by
   unfold record_trial
   rw [u64_bne]
@@ -112,8 +154,9 @@ theorem holdout_is_once (actor : Principal) (s : Snapshot) (family passed : U64)
 corrected score it was given. -/
 theorem record_counts_the_trial
     (actor : Principal) (s : Snapshot)
-    (pending data_version score corrected sharpe skew kurt samples tokens : U64) :
-    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens ⦃ r =>
+    (pending data_version score corrected sharpe skew kurt samples tokens : U64)
+    (curve : alloc.vec.Vec U8) :
+    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens curve ⦃ r =>
       ∀ ws rep, r = .Ok (ws, rep) →
         ∃ (f wrote : Family),
           f ∈ s.families.val ∧
@@ -133,6 +176,26 @@ theorem record_counts_the_trial
     · simp [wrote]
     · simpa [wrote] using i2_post
     · simp [wrote]
-    · simp [v_post, wrote])
+    · simp [v1_post, wrote])
+
+/-- A successful freeze copied a trial the family had already counted: the
+frozen code, parameters, and data version are that trial's. An agent cannot
+freeze a strategy that was never run and recorded. -/
+theorem freeze_requires_a_counted_trial (actor : Principal) (s : Snapshot) (family trial : U64) :
+    freeze actor s family trial ⦃ r => ∀ ws rep, r = .Ok (ws, rep) →
+      ∃ t, s.trials.val.find? (fun x => x.id.val = trial.val) = some t ∧
+        t.family.val = family.val ∧
+        ∃ f, Write.PutFamily f ∈ ws.val ∧ f.frozen_code = t.code ∧
+          f.frozen_params = t.params ∧ f.frozen_data = t.data_version ⦄ := by
+  unfold freeze freeze_trial
+  step*
+  intro ws rep hr
+  obtain ⟨rfl, rfl⟩ := ok_inj hr
+  have hfam : t.family = f.id := by simpa [u64_bne] using ‹¬(t.family != f.id) = true›
+  have hf := List.find?_some (o_post ▸ ‹o = some f›)
+  simp only [decide_eq_true_eq] at hf
+  refine ⟨t, o1_post ▸ ‹o1 = some t›, by rw [hfam]; exact hf,
+    { f with frozen_code := t.code, frozen_params := t.params, frozen_data := t.data_version },
+    by simp [v_post], rfl, rfl, rfl⟩
 
 end lab_kernel

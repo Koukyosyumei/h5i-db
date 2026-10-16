@@ -2,7 +2,10 @@
 //! and the h5i-db worker. It does not decide who may do what.
 
 mod deflated;
+pub mod market;
+mod measure;
 mod runner;
+pub mod strategy;
 mod worker;
 
 use std::sync::{Arc, Mutex};
@@ -23,7 +26,9 @@ pub use runner::{
     Activity, AgentProc, BoxSpec, Runner, SandboxMode, activity, looks_looping, looks_stalled,
     pause_agent, resume_agent, start_agent, start_shell, stop_agent, wait_agent,
 };
-pub use worker::{DbWorker, kernel_claims};
+pub use worker::{
+    DbWorker, STARTING_CASH, code_identity, evaluate_holdout_run, holdout_passed, kernel_claims,
+};
 
 pub struct Lab;
 
@@ -109,15 +114,22 @@ enum CommandJson {
         budget: u64,
         token_budget: u64,
         sandbox: u64,
+        #[serde(default)]
+        name: String,
     },
     PreRegister {
-        hypothesis: u64,
-        method: u64,
+        hypothesis: String,
+        method: String,
     },
+    /// `code` is a program in the strategy language ([`strategy`]) and
+    /// `params` a JSON object of numbers. Both are checked before the ledger
+    /// sees them; the parameters are stored in one canonical text.
     RequestTrial {
         family: u64,
-        code: u64,
-        params: u64,
+        name: String,
+        code: String,
+        #[serde(default)]
+        params: serde_json::Value,
         decision_time: u64,
     },
     RecordTrial {
@@ -130,12 +142,12 @@ enum CommandJson {
         kurt: u64,
         samples: u64,
         tokens: u64,
+        #[serde(default)]
+        curve: String,
     },
     Freeze {
         family: u64,
-        code: u64,
-        params: u64,
-        data_version: u64,
+        trial: u64,
     },
     SubmitHoldout {
         family: u64,
@@ -165,45 +177,56 @@ enum CommandJson {
     Fleet,
 }
 
-impl From<CommandJson> for k::Command {
-    fn from(c: CommandJson) -> Self {
-        match c {
+/// Longest strategy name, hypothesis, or method name, in bytes.
+const MAX_LABEL: usize = 4_096;
+
+impl TryFrom<CommandJson> for k::Command {
+    type Error = String;
+
+    fn try_from(c: CommandJson) -> Result<Self, String> {
+        Ok(match c {
             CommandJson::Enroll {
                 agent,
                 budget,
                 token_budget,
                 sandbox,
+                name,
             } => k::Command::Enroll {
                 agent,
                 budget,
                 token_budget,
                 sandbox,
+                name: name.trim().as_bytes().to_vec(),
             },
             CommandJson::PreRegister { hypothesis, method } => {
-                k::Command::PreRegister { hypothesis, method }
+                if hypothesis.len() > MAX_LABEL || method.len() > MAX_LABEL {
+                    return Err("hypothesis and method are at most 4096 bytes".into());
+                }
+                k::Command::PreRegister {
+                    hypothesis: hypothesis.trim().as_bytes().to_vec(),
+                    method: method.trim().as_bytes().to_vec(),
+                }
             }
             CommandJson::RequestTrial {
                 family,
+                name,
                 code,
                 params,
                 decision_time,
-            } => k::Command::RequestTrial {
-                family,
-                code,
-                params,
-                decision_time,
-            },
-            CommandJson::Freeze {
-                family,
-                code,
-                params,
-                data_version,
-            } => k::Command::Freeze {
-                family,
-                code,
-                params,
-                data_version,
-            },
+            } => {
+                strategy::Program::compile(&code, &params)?;
+                if name.trim().is_empty() || name.len() > 64 {
+                    return Err("a strategy name is 1 to 64 bytes".into());
+                }
+                k::Command::RequestTrial {
+                    family,
+                    name: name.trim().as_bytes().to_vec(),
+                    code: code.into_bytes(),
+                    params: strategy::canonical_params(&params)?.into_bytes(),
+                    decision_time,
+                }
+            }
+            CommandJson::Freeze { family, trial } => k::Command::Freeze { family, trial },
             CommandJson::SubmitHoldout { family } => k::Command::SubmitHoldout { family },
             CommandJson::RecordTrial {
                 pending,
@@ -215,6 +238,7 @@ impl From<CommandJson> for k::Command {
                 kurt,
                 samples,
                 tokens,
+                curve,
             } => k::Command::RecordTrial {
                 pending,
                 data_version,
@@ -225,6 +249,7 @@ impl From<CommandJson> for k::Command {
                 kurt,
                 samples,
                 tokens,
+                curve: curve.into_bytes(),
             },
             CommandJson::EvaluateHoldout { family, passed } => {
                 k::Command::EvaluateHoldout { family, passed }
@@ -244,13 +269,45 @@ impl From<CommandJson> for k::Command {
             },
             CommandJson::Report { family } => k::Command::Report { family },
             CommandJson::Fleet => k::Command::Fleet,
-        }
+        })
     }
 }
 
-fn agent_json(a: &k::Agent) -> Out {
+fn text_of(texts: &[k::Text], id: u64) -> Option<&k::Text> {
+    texts.iter().find(|row| row.id == id)
+}
+
+fn body_of(texts: &[k::Text], id: u64) -> String {
+    text_of(texts, id)
+        .map(|row| String::from_utf8_lossy(&row.body).into_owned())
+        .unwrap_or_default()
+}
+
+fn kind_name(kind: u64) -> &'static str {
+    match kind {
+        k::TEXT_HYPOTHESIS => "hypothesis",
+        k::TEXT_METHOD => "method",
+        k::TEXT_CODE => "code",
+        k::TEXT_PARAMS => "params",
+        k::TEXT_AGENT => "agent",
+        _ => "other",
+    }
+}
+
+/// The agent's name. Label 0 is no name.
+fn agent_name(a: &k::Agent, texts: &[k::Text]) -> String {
+    match text_of(texts, a.label) {
+        Some(row) if a.label != 0 && row.kind == k::TEXT_AGENT => {
+            String::from_utf8_lossy(&row.body).into_owned()
+        }
+        _ => String::new(),
+    }
+}
+
+fn agent_json(a: &k::Agent, texts: &[k::Text]) -> Out {
     Out::obj([
         ("id", a.id.into()),
+        ("name", Out::str(agent_name(a, texts))),
         ("budget", a.budget.into()),
         ("used", a.used.into()),
         ("token_budget", a.token_budget.into()),
@@ -268,17 +325,33 @@ fn agent_json(a: &k::Agent) -> Out {
     ])
 }
 
-fn family_json(f: &k::Family) -> Out {
+fn family_json(f: &k::Family, texts: &[k::Text]) -> Out {
+    // Frozen code 0 is not frozen.
+    let frozen_name = text_of(texts, f.frozen_code)
+        .filter(|_| f.frozen_code != 0)
+        .map(|row| String::from_utf8_lossy(&row.name).into_owned())
+        .unwrap_or_default();
     Out::obj([
         ("id", f.id.into()),
         ("agent", f.agent.into()),
         ("task", f.task.into()),
         ("hypothesis", f.hypothesis.into()),
+        ("hypothesis_text", Out::str(body_of(texts, f.hypothesis))),
         ("method", f.method.into()),
+        ("method_text", Out::str(body_of(texts, f.method))),
         ("trials", f.trials.into()),
         ("corrected", f.corrected.into()),
         ("frozen_code", f.frozen_code.into()),
+        ("frozen_name", Out::str(frozen_name)),
         ("frozen_params", f.frozen_params.into()),
+        (
+            "frozen_params_text",
+            Out::str(if f.frozen_code != 0 {
+                body_of(texts, f.frozen_params)
+            } else {
+                String::new()
+            }),
+        ),
         ("frozen_data", f.frozen_data.into()),
         ("holdout", f.holdout.into()),
         ("promoted", f.promoted.into()),
@@ -286,13 +359,23 @@ fn family_json(f: &k::Family) -> Out {
     ])
 }
 
-fn trial_json(t: &k::Trial) -> Out {
+fn trial_json(t: &k::Trial, texts: &[k::Text], curves: &[k::Curve]) -> Out {
+    let code_name = text_of(texts, t.code)
+        .map(|row| String::from_utf8_lossy(&row.name).into_owned())
+        .unwrap_or_default();
+    let curve = curves
+        .iter()
+        .find(|row| row.id == t.id)
+        .map(|row| String::from_utf8_lossy(&row.body).into_owned())
+        .unwrap_or_default();
     Out::obj([
         ("id", t.id.into()),
         ("family", t.family.into()),
         ("agent", t.agent.into()),
         ("code", t.code.into()),
+        ("code_name", Out::str(code_name)),
         ("params", t.params.into()),
+        ("params_text", Out::str(body_of(texts, t.params))),
         ("data_version", t.data_version.into()),
         ("decision_time", t.decision_time.into()),
         ("score", t.score.into()),
@@ -301,14 +384,28 @@ fn trial_json(t: &k::Trial) -> Out {
         ("kurt", t.kurt.into()),
         ("samples", t.samples.into()),
         ("tokens", t.tokens.into()),
+        ("curve", Out::str(curve)),
     ])
+}
+
+fn text_json(row: &k::Text) -> Out {
+    let mut fields = vec![
+        ("id", row.id.into()),
+        ("kind", Out::str(kind_name(row.kind))),
+        ("name", Out::str(&row.name)),
+        ("body", Out::str(&row.body)),
+    ];
+    if row.kind == k::TEXT_CODE {
+        fields.push(("identity", Out::str(code_identity(&row.body))));
+    }
+    Out::obj(fields)
 }
 
 impl h5i_app_http::Api<Lab> for LabStore {
     fn decode_command(body: serde_json::Value) -> Result<k::Command, String> {
         serde_json::from_value::<CommandJson>(body)
-            .map(Into::into)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?
+            .try_into()
     }
 
     fn encode_reply(r: &k::Reply) -> Out {
@@ -323,13 +420,27 @@ impl h5i_app_http::Api<Lab> for LabStore {
                 agents,
                 families,
                 trials,
+                texts,
+                curves,
             } => Out::obj([
-                ("agents", Out::Arr(agents.iter().map(agent_json).collect())),
+                (
+                    "agents",
+                    Out::Arr(agents.iter().map(|a| agent_json(a, texts)).collect()),
+                ),
                 (
                     "families",
-                    Out::Arr(families.iter().map(family_json).collect()),
+                    Out::Arr(families.iter().map(|f| family_json(f, texts)).collect()),
                 ),
-                ("trials", Out::Arr(trials.iter().map(trial_json).collect())),
+                (
+                    "trials",
+                    Out::Arr(
+                        trials
+                            .iter()
+                            .map(|t| trial_json(t, texts, curves))
+                            .collect(),
+                    ),
+                ),
+                ("texts", Out::Arr(texts.iter().map(text_json).collect())),
             ]),
         }
     }
@@ -357,9 +468,11 @@ enum StoredReply {
     },
     // Kernel rows stay free of serde. The tuple order is the struct field order.
     Fleet {
-        agents: Vec<(u64, u64, u64, u64, u64, u64, u64)>,
+        agents: Vec<(u64, u64, u64, u64, u64, u64, u64, u64)>,
         families: Vec<FamilyRow>,
         trials: Vec<TrialRow>,
+        texts: Vec<(u64, u64, Vec<u8>, Vec<u8>)>,
+        curves: Vec<(u64, Vec<u8>)>,
     },
 }
 
@@ -418,6 +531,8 @@ impl ReplyCodec<Lab> for LabStore {
                 agents,
                 families,
                 trials,
+                texts,
+                curves,
             } => StoredReply::Fleet {
                 agents: agents
                     .iter()
@@ -430,9 +545,15 @@ impl ReplyCodec<Lab> for LabStore {
                             a.tokens_used,
                             a.fork_id,
                             a.sandbox,
+                            a.label,
                         )
                     })
                     .collect(),
+                texts: texts
+                    .iter()
+                    .map(|t| (t.id, t.kind, t.name.clone(), t.body.clone()))
+                    .collect(),
+                curves: curves.iter().map(|c| (c.id, c.body.clone())).collect(),
                 families: families
                     .iter()
                     .map(|f| FamilyRow {
@@ -484,11 +605,22 @@ impl ReplyCodec<Lab> for LabStore {
                     agents,
                     families,
                     trials,
+                    texts,
+                    curves,
                 } => k::Reply::Fleet {
                     agents: agents
                         .into_iter()
                         .map(
-                            |(id, budget, used, token_budget, tokens_used, fork_id, sandbox)| {
+                            |(
+                                id,
+                                budget,
+                                used,
+                                token_budget,
+                                tokens_used,
+                                fork_id,
+                                sandbox,
+                                label,
+                            )| {
                                 k::Agent {
                                     id,
                                     budget,
@@ -497,9 +629,23 @@ impl ReplyCodec<Lab> for LabStore {
                                     tokens_used,
                                     fork_id,
                                     sandbox,
+                                    label,
                                 }
                             },
                         )
+                        .collect(),
+                    texts: texts
+                        .into_iter()
+                        .map(|(id, kind, name, body)| k::Text {
+                            id,
+                            kind,
+                            name,
+                            body,
+                        })
+                        .collect(),
+                    curves: curves
+                        .into_iter()
+                        .map(|(id, body)| k::Curve { id, body })
                         .collect(),
                     families: families
                         .into_iter()
@@ -720,6 +866,8 @@ mod tests {
                 agents: vec![],
                 families: vec![family],
                 trials: vec![],
+                texts: vec![],
+                curves: vec![],
             })
             .to_bytes(),
         )
@@ -769,6 +917,7 @@ pub fn router(app: App) -> Router {
         .route("/api/agents/resume", post(resume))
         .route("/api/comment", post(comment))
         .route("/api/comments", get(comments))
+        .route("/api/holdouts", get(holdouts))
         .route("/api/outbox/replay", post(replay_outbox))
         .with_state(app)
 }
@@ -1205,6 +1354,37 @@ async fn comment(
         }
         Err(error) => {
             tracing::error!(%error, "review was not recorded");
+            reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
+        }
+    }
+}
+
+/// Holdout evaluations as h5i-db recorded them, with the summary the
+/// worker computed on the sealed span. Not for agents.
+async fn holdouts(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
+    if actor.principal().role == k::ROLE_AGENT {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    let db = Arc::clone(&app.db);
+    let state = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move { db.export_state().await.map_err(|e| e.to_string()) })
+    })
+    .await;
+    match state {
+        Ok(Ok(state)) => {
+            let body = serde_json::to_string(&state.evaluations).unwrap_or_else(|_| "[]".into());
+            reply(StatusCode::OK, Out::obj([("holdouts", Out::str(&body))]))
+        }
+        Ok(Err(error)) => {
+            tracing::error!(%error, "holdout records were not read");
+            reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
+        }
+        Err(error) => {
+            tracing::error!(%error, "holdout read task failed");
             reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
         }
     }

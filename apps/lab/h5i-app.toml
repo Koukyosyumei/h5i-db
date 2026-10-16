@@ -15,6 +15,8 @@ theorems = [
     "lab_kernel.record_counts_the_trial",
     "lab_kernel.rejected_never_promotes",
     "lab_kernel.review_requires_human",
+    "lab_kernel.intern_names_the_text",
+    "lab_kernel.freeze_requires_a_counted_trial",
 ]
 
 # Bugs the proofs must reject (`h5i app mutate`). Each `old` occurs once.
@@ -37,3 +39,13 @@ new = "trials: f.trials,"
 name = "promote_a_rejected_strategy"
 old = "if f.rejected != 0 {"
 new = "if false {"
+
+[[mutant]]
+name = "freeze_another_familys_trial"
+old = "if t.family != f.id {"
+new = "if false {"
+
+[[mutant]]
+name = "a_reused_text_gets_a_new_id"
+old = "Some(id) => Ok((id, None, next)),"
+new = "Some(id) => Ok((next, None, next)),"

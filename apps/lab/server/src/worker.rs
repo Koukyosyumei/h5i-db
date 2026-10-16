@@ -7,16 +7,25 @@
 //! The deflated Sharpe ratio is computed here, from the family's stored trial
 //! statistics and this run's equity curve. The kernel stores the integer it
 //! is given. It does not evaluate the formula.
+//!
+//! A trial runs the agent's program ([`crate::strategy`]) in the backtest
+//! engine on the agent's fork, at the requested decision time. The holdout
+//! runs the frozen program once over the sealed span and passes when it made
+//! money after costs.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use h5i_app_core::TenantId;
 use h5i_app_pg::Engine;
-use h5i_db_backtest::engine::Strategy;
+use h5i_db_backtest::engine::{Context, Engine as BacktestEngine, Strategy};
+use h5i_db_backtest::replay::{Replay, priority};
+use h5i_db_backtest::types::{Money, UnixNanos};
+use h5i_db_backtest::window::TimeWindow;
+use h5i_db_core::database::ReadAt;
 use h5i_db_service::{
     BacktestRequest, CreateFork, ForkFrom, ForkState, HoldoutCall, HoldoutOpened, HoldoutReceipt,
-    PromoteOne, PromoteTable, PromotionState, QueryRequest, QueryResult, ReadPoint, Service,
+    PromoteOne, PromoteTable, PromotionState, ReadPoint, Service,
     StateDocument, TrialState,
 };
 use lab_kernel as k;
@@ -24,16 +33,12 @@ use lab_kernel as k;
 use crate::deflated::{
     TrialStats, decode_stat, deflated_sharpe, encode_stat, no_returns, stats_from_equity,
 };
+use crate::measure::measurement;
+use crate::strategy::{Program, RuleStrategy, Tally};
 use crate::{Lab, LabStore};
 
-/// As-of for the equity read. The worker handle has no ceiling. As-of uses
-/// the commit clock, so the pending's decision time would hide the rows just
-/// written.
-const EQUITY_READ_NS: i64 = i64::MAX / 4;
-
-/// A longer curve is not summarized. The query cap makes a longer scan
-/// truncated, and a truncated prefix is refused.
-const EQUITY_CAP: usize = 100_000;
+/// Starting cash of every trial and of the holdout run, in units.
+pub const STARTING_CASH: f64 = 100_000.0;
 
 pub struct DbWorker {
     pub engine: Arc<Engine<Lab, LabStore>>,
@@ -142,8 +147,9 @@ pub fn kernel_claims(snap: &k::Snapshot, actual: &StateDocument, seal_id: &str) 
                     run_id,
                     ts_ns: 0,
                     config_digest: String::new(),
-                    code_identity: trial.code.to_string(),
-                    parameters: trial.params.to_string(),
+                    code_identity: code_identity(&text_body(snap, trial.code)),
+                    parameters: String::from_utf8_lossy(&text_body(snap, trial.params))
+                        .into_owned(),
                     data_version: trial.data_version.to_string(),
                     decision_time_ns: i64::try_from(trial.decision_time).ok(),
                     scope: String::new(),
@@ -229,20 +235,162 @@ pub fn tables_to_promote(fork: &ForkState) -> Vec<PromoteTable> {
         .collect()
 }
 
-enum HoldoutCount {
-    Rows(u64),
+enum HoldoutOutcome {
+    Summary(serde_json::Value),
     Used(String),
 }
 
-struct Touch;
+/// Body of the text with this id, or empty when there is none.
+pub fn text_body(snap: &k::Snapshot, id: u64) -> Vec<u8> {
+    snap.texts
+        .iter()
+        .find(|row| row.id == id)
+        .map(|row| row.body.clone())
+        .unwrap_or_default()
+}
 
-impl Strategy for Touch {
-    fn on_start(
-        &mut self,
-        _ctx: &mut h5i_db_backtest::engine::Context<'_>,
-    ) -> h5i_db_backtest::error::Result<()> {
-        Ok(())
+/// What h5i-db records as the code identity: a content hash of the code text.
+pub fn code_identity(code: &[u8]) -> String {
+    format!("blake3:{}", blake3::hash(code).to_hex())
+}
+
+/// The program a trial or holdout runs. A program that does not parse still
+/// goes to the engine, which refuses it at the start, so h5i-db records the
+/// attempt like any other rejected run.
+enum Run {
+    Rules(RuleStrategy),
+    Refused(String),
+}
+
+impl Run {
+    fn new(code: &[u8], params: &[u8]) -> Self {
+        let code = String::from_utf8_lossy(code);
+        let params =
+            serde_json::from_slice::<serde_json::Value>(params).unwrap_or(serde_json::Value::Null);
+        match Program::compile(&code, &params) {
+            Ok(program) => Run::Rules(RuleStrategy::new(program)),
+            Err(error) => Run::Refused(format!("strategy: {error}")),
+        }
     }
+
+    fn tally(&self) -> Tally {
+        match self {
+            Run::Rules(rules) => rules.tally,
+            Run::Refused(_) => Tally::default(),
+        }
+    }
+
+    fn curve(&self) -> &[(i64, f64)] {
+        match self {
+            Run::Rules(rules) => &rules.curve,
+            Run::Refused(_) => &[],
+        }
+    }
+}
+
+impl Strategy for Run {
+    fn on_start(&mut self, ctx: &mut Context<'_>) -> h5i_db_backtest::error::Result<()> {
+        match self {
+            Run::Rules(rules) => rules.on_start(ctx),
+            Run::Refused(error) => Err(h5i_db_backtest::error::BacktestError::invalid(
+                error.clone(),
+            )),
+        }
+    }
+
+    fn on_event(
+        &mut self,
+        ctx: &mut Context<'_>,
+        record: &h5i_db_backtest::event::Record,
+    ) -> h5i_db_backtest::error::Result<()> {
+        match self {
+            Run::Rules(rules) => rules.on_event(ctx, record),
+            Run::Refused(_) => Ok(()),
+        }
+    }
+
+    fn on_fill(
+        &mut self,
+        ctx: &mut Context<'_>,
+        fill: &h5i_db_backtest::order::Fill,
+    ) -> h5i_db_backtest::error::Result<()> {
+        match self {
+            Run::Rules(rules) => rules.on_fill(ctx, fill),
+            Run::Refused(_) => Ok(()),
+        }
+    }
+}
+
+/// Run `run` over the sealed span of `seal_id`, in memory, on a handle that
+/// holds the one holdout grant. Nothing is written to the database; the
+/// summary goes into the evaluation record.
+async fn evaluate_sealed(
+    db: &h5i_db_core::Database,
+    seal_id: &str,
+    run: &mut Run,
+) -> Result<serde_json::Value, String> {
+    use h5i_db_backtest::store;
+    let path = h5i_db_core::layout::seal_path(seal_id);
+    let bytes = db
+        .backend()
+        .get_opt(&path)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("seal {seal_id} is not in h5i-db"))?;
+    let seal: h5i_db_core::Seal = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let window = TimeWindow::new(UnixNanos::new(seal.start_ns), UnixNanos::new(seal.end_ns))
+        .map_err(|e| e.to_string())?;
+    let instruments = store::read_instruments(db, ReadAt::Latest)
+        .await
+        .map_err(|e| e.to_string())?;
+    let book = store::read_book_events(db, ReadAt::Latest, Some(window))
+        .await
+        .map_err(|e| e.to_string())?;
+    let trades = store::trade_source(db, ReadAt::Latest, Some(window))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut replay = Replay::builder()
+        .stream("book", priority::SNAPSHOT, book)
+        .source("trades", priority::TRADE, trades)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let cash = Money::from_f64(STARTING_CASH).map_err(|e| e.to_string())?;
+    let mut engine = BacktestEngine::builder(instruments)
+        .starting_cash(cash)
+        .start(window.start())
+        .build();
+    let result = engine.run(&mut replay, run).map_err(|e| e.to_string())?;
+    Ok(measurement(
+        STARTING_CASH,
+        run.curve(),
+        &run.tally(),
+        &serde_json::json!({
+            "seal": seal_id,
+            "window_ns": [seal.start_ns, seal.end_ns],
+            "records": result.records_processed,
+        }),
+    ))
+}
+
+/// Run `code` with `params` over the sealed span of `seal_id` on `db`, which
+/// has to be a handle holding that seal's grant to see anything.
+pub async fn evaluate_holdout_run(
+    db: &h5i_db_core::Database,
+    seal_id: &str,
+    code: &[u8],
+    params: &[u8],
+) -> Result<serde_json::Value, String> {
+    let mut run = Run::new(code, params);
+    evaluate_sealed(db, seal_id, &mut run).await
+}
+
+/// A holdout passes when the frozen program ran and ended above its starting cash.
+pub fn holdout_passed(summary: &serde_json::Value) -> bool {
+    summary.get("error").is_none()
+        && summary
+            .get("net")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|net| net > 0.0)
 }
 
 /// h5i-db futures are not `Send` (backtest trait objects, and some fork
@@ -273,63 +421,10 @@ where
     .map_err(|e| e.to_string())?
 }
 
-fn score_of(summary: &str) -> u64 {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(summary) else {
-        return 0;
-    };
-    value
-        .get("records_processed")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-}
-
 struct TrialMeasure {
     score: u64,
     stats: TrialStats,
-}
-
-fn json_f64(value: &serde_json::Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-        .filter(|number| number.is_finite())
-}
-
-fn row_count(rows: &[serde_json::Value]) -> Option<u64> {
-    let cell = rows.first()?.get("n")?;
-    cell.as_u64()
-        .or_else(|| cell.as_i64().and_then(|n| u64::try_from(n).ok()))
-        .or_else(|| cell.as_str().and_then(|text| text.parse().ok()))
-}
-
-/// How many equity rows were already on the fork.
-///
-/// A missing table is zero. Any other count error refuses the curve, so a
-/// failed count is not treated as an empty history.
-fn equity_start(result: Result<QueryResult, String>) -> Option<usize> {
-    match result {
-        Ok(query) => row_count(&query.rows).and_then(|n| usize::try_from(n).ok()),
-        Err(error) if error.contains("not found") => Some(0),
-        Err(_) => None,
-    }
-}
-
-/// Points appended after `before`, in the order the query returned them.
-///
-/// That order is the scan order of the append-only segments. Sorting by
-/// simulated time is wrong: a later run can restart the clock at zero and
-/// interleave. `None` means the scan was truncated, shorter than `before`,
-/// or a point did not parse. The caller records that trial as having no
-/// returns rather than a biased prefix.
-fn equity_tail(rows: &[serde_json::Value], before: usize, truncated: bool) -> Option<Vec<f64>> {
-    if truncated || rows.len() < before {
-        return None;
-    }
-    let mut curve = Vec::with_capacity(rows.len() - before);
-    for row in rows.iter().skip(before) {
-        curve.push(json_f64(row.get("equity")?)?);
-    }
-    Some(curve)
+    curve: serde_json::Value,
 }
 
 fn stats_of(trial: &k::Trial) -> TrialStats {
@@ -382,8 +477,10 @@ impl DbWorker {
         }
         let fork = fork_name(pending.agent);
         let decision = i64::try_from(pending.decision_time).unwrap_or(i64::MAX);
-        let code = pending.code.to_string();
-        let params = pending.params.to_string();
+        let code = text_body(&snap, pending.code);
+        let params = text_body(&snap, pending.params);
+        let identity = code_identity(&code);
+        let parameters = String::from_utf8_lossy(&params).into_owned();
         let agent = pending.agent;
         let db = Arc::clone(&self.db);
         let effect_key = key.to_string();
@@ -405,65 +502,69 @@ impl DbWorker {
                 .handle(Some(&fork), None)
                 .await
                 .map_err(|e| e.to_string())?;
-            let counted = handle
-                .query(&QueryRequest {
-                    decision_time_ns: EQUITY_READ_NS,
-                    sql: "SELECT count(*) AS n FROM bt_equity".into(),
-                    max_rows: Some(10),
-                })
-                .await
-                .map_err(|e| e.to_string());
-            let before = equity_start(counted);
-            let mut strategy = Touch;
+            let mut run = Run::new(&code, &params);
+            let cash = Money::from_f64(STARTING_CASH).map_err(|e| e.to_string())?;
             let receipt = handle
                 .backtest(
                     &BacktestRequest {
                         idempotency_key: format!("bt-{effect_key}"),
                         run_id: format!("p-{pending_id}"),
-                        code_identity: code,
-                        parameters: params,
+                        code_identity: identity,
+                        parameters,
                         decision_time_ns: decision,
-                        starting_cash_raw: 1_000_000_000_000,
+                        starting_cash_raw: cash.raw() as i64,
                         read_at: ReadPoint::Latest,
                     },
-                    &mut strategy,
+                    &mut run,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            let stats = match before {
-                Some(start) => match handle
-                    .query(&QueryRequest {
-                        decision_time_ns: EQUITY_READ_NS,
-                        sql: "SELECT equity FROM bt_equity".into(),
-                        max_rows: Some(EQUITY_CAP),
-                    })
-                    .await
-                {
-                    Ok(curve) => match equity_tail(&curve.rows, start, curve.truncated) {
-                        Some(points) => stats_from_equity(&points),
-                        None => no_returns(),
-                    },
-                    Err(_) => no_returns(),
-                },
-                None => no_returns(),
-            };
-            Ok(TrialMeasure {
-                score: score_of(&receipt.result_summary),
-                stats,
+            // The engine's account as the run went. A replay of a finished
+            // run does not call the strategy, so it has no curve to measure.
+            let points = (!run.curve().is_empty()).then(|| run.curve().to_vec());
+            let ids = serde_json::json!({
+                "run_id": receipt.run_id,
+                "code_identity": receipt.code_identity,
+                "data_version": receipt.data_version,
+            });
+            Ok(match points {
+                Some(points) => {
+                    let curve: Vec<f64> = points.iter().map(|(_, equity)| *equity).collect();
+                    let measured = measurement(STARTING_CASH, &points, &run.tally(), &ids);
+                    let ret = measured["return"].as_f64().unwrap_or(0.0);
+                    TrialMeasure {
+                        score: encode_stat(ret),
+                        stats: stats_from_equity(&curve),
+                        curve: measured,
+                    }
+                }
+                // A replay of a finished run, or a curve that cannot be
+                // attributed to this run: no returns, and the trial counts.
+                None => {
+                    let mut curve = ids;
+                    curve["unmeasured"] =
+                        serde_json::json!("the run was a replay; its curve was not observed");
+                    TrialMeasure {
+                        score: encode_stat(0.0),
+                        stats: no_returns(),
+                        curve,
+                    }
+                }
             })
         })
         .await;
         let measured = match ran {
             Ok(measured) => measured,
-            // The engine answered. Retrying will not grow an instruments
-            // catalog, and leaving the pending open would spend budget
-            // without counting the attempt. The empty trial still counts,
-            // and it still moves the family's corrected score.
+            // The engine answered. Retrying will not change the program or the
+            // data, and leaving the pending open would spend budget without
+            // counting the attempt. The empty trial still counts, and it still
+            // moves the family's corrected score.
             Err(error) if error.starts_with("backtest:") => {
                 self.note(org, "backtest", &error).await;
                 TrialMeasure {
-                    score: 0,
+                    score: encode_stat(0.0),
                     stats: no_returns(),
+                    curve: serde_json::json!({ "rejected": error }),
                 }
             }
             Err(error) => return Err(error),
@@ -496,6 +597,7 @@ impl DbWorker {
             kurt,
             samples,
             tokens: 0,
+            curve: serde_json::to_vec(&measured.curve).map_err(|e| e.to_string())?,
         };
         self.engine
             .execute_idempotent(&worker(org), key, &cmd)
@@ -520,69 +622,54 @@ impl DbWorker {
         let db = Arc::clone(&self.db);
         let effect_key = key.to_string();
         let seal_id = self.seal_id.clone();
-        let table = self.holdout_table.clone();
-        let code = family.frozen_code.to_string();
-        let params = family.frozen_params.to_string();
+        let code = text_body(&snap, family.frozen_code);
+        let params = text_body(&snap, family.frozen_params);
+        let identity = code_identity(&code);
+        let parameters = String::from_utf8_lossy(&params).into_owned();
         let data_version = family.frozen_data.to_string();
         let opened = on_db(move || async move {
             match db
                 .begin_holdout(&HoldoutCall {
                     idempotency_key: format!("ho-{effect_key}"),
-                    seal_id,
-                    code_identity: code,
-                    parameters: params,
+                    seal_id: seal_id.clone(),
+                    code_identity: identity,
+                    parameters,
                     data_version,
                 })
                 .await
             {
-                Ok(HoldoutOpened::Completed(receipt)) => Ok(HoldoutCount::Rows(
-                    receipt
-                        .summary
-                        .as_ref()
-                        .and_then(|v| v.get("rows"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0),
+                Ok(HoldoutOpened::Completed(receipt)) => Ok(HoldoutOutcome::Summary(
+                    receipt.summary.unwrap_or(serde_json::Value::Null),
                 )),
                 Ok(HoldoutOpened::Grant(grant)) => {
-                    let query = grant
-                        .handle()
-                        .query(&QueryRequest {
-                            decision_time_ns: i64::MAX / 4,
-                            sql: format!("SELECT count(*) AS n FROM {table}"),
-                            max_rows: Some(10),
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let n = query
-                        .rows
-                        .first()
-                        .and_then(|row| row.get("n"))
-                        .and_then(|v| {
-                            v.as_u64()
-                                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                        })
-                        .unwrap_or(0);
+                    let handle = grant.handle();
+                    let mut run = Run::new(&code, &params);
+                    let summary = match evaluate_sealed(handle.database(), &seal_id, &mut run).await
+                    {
+                        Ok(summary) => summary,
+                        Err(error) => serde_json::json!({ "error": error }),
+                    };
                     grant
-                        .finish(serde_json::json!({"rows": n}))
+                        .finish(summary.clone())
                         .await
                         .map_err(|e| e.to_string())?;
-                    Ok(HoldoutCount::Rows(n))
+                    Ok(HoldoutOutcome::Summary(summary))
                 }
                 Err(error) if error.code() == "holdout_used" => {
-                    Ok(HoldoutCount::Used(error.to_string()))
+                    Ok(HoldoutOutcome::Used(error.to_string()))
                 }
                 Err(error) => Err(error.to_string()),
             }
         })
         .await?;
-        let rows = match opened {
-            HoldoutCount::Rows(rows) => rows,
-            HoldoutCount::Used(detail) => {
+        let summary = match opened {
+            HoldoutOutcome::Summary(summary) => summary,
+            HoldoutOutcome::Used(detail) => {
                 self.note(org, "holdout", &detail).await;
                 return Err(detail);
             }
         };
-        let passed = if rows > 0 {
+        let passed = if holdout_passed(&summary) {
             k::HOLDOUT_PASS
         } else {
             k::HOLDOUT_FAIL
@@ -647,7 +734,7 @@ impl DbWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use h5i_db_service::{OwnedHead, PinReceipt, QueryResult};
+    use h5i_db_service::{OwnedHead, PinReceipt};
 
     fn fork(name: &str, owned: Vec<OwnedHead>, pins: Vec<PinReceipt>) -> ForkState {
         ForkState {
@@ -723,6 +810,7 @@ mod tests {
                 tokens_used: 0,
                 fork_id: 1,
                 sandbox: 0,
+                label: 0,
             }],
             families: vec![family(1, 1, 1)],
             ..k::Snapshot::default()
@@ -776,6 +864,7 @@ mod tests {
                     tokens_used: 0,
                     fork_id: 1,
                     sandbox: 0,
+                    label: 0,
                 },
                 k::Agent {
                     id: 2,
@@ -785,6 +874,7 @@ mod tests {
                     tokens_used: 0,
                     fork_id: 2,
                     sandbox: 1,
+                    label: 0,
                 },
             ],
             trials: vec![k::Trial {
@@ -829,6 +919,7 @@ mod tests {
                 tokens_used: 0,
                 fork_id: 1,
                 sandbox: 0,
+                label: 0,
             }],
             trials: vec![k::Trial {
                 id: 2,
@@ -882,28 +973,6 @@ mod tests {
             !Service::reconcile(&missing, &kernel_claims(&snap, &missing, "holdout")).agrees(),
             "a ledger trial with no bt_trial row does not reconcile"
         );
-    }
-
-    #[test]
-    fn the_equity_tail_is_the_appended_scan_and_a_truncated_scan_is_refused() {
-        let rows = vec![
-            serde_json::json!({"equity": 10.0}),
-            serde_json::json!({"equity": 11.0}),
-            serde_json::json!({"equity": 12.1}),
-        ];
-        assert_eq!(equity_tail(&rows, 1, false).unwrap(), vec![11.0, 12.1]);
-        assert!(equity_tail(&rows, 1, true).is_none());
-        assert!(equity_tail(&rows, 4, false).is_none());
-        assert!(equity_tail(&[serde_json::json!({"equity": "no"})], 0, false).is_none());
-        let missing = equity_start(Err("query: table \"bt_equity\" not found".into()));
-        assert_eq!(missing, Some(0));
-        assert_eq!(equity_start(Err("query: lock timeout".into())), None);
-        let counted = QueryResult {
-            decision_time_ns: 0,
-            rows: vec![serde_json::json!({"n": 4})],
-            truncated: false,
-        };
-        assert_eq!(equity_start(Ok(counted)), Some(4));
     }
 
     #[test]

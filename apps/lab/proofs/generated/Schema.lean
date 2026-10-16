@@ -127,9 +127,9 @@ def Meta.zero : Meta := { next_id := 0#u64 }
 
 /-! ## `Agent` (table `agents`) -/
 
-/-- Columns `id`, `budget`, `used`, `token_budget`, `tokens_used`, `fork_id`, `sandbox`. -/
+/-- Columns `id`, `budget`, `used`, `token_budget`, `tokens_used`, `fork_id`, `sandbox`, `label`. -/
 def Agent.row (x : Agent) : List Val :=
-  [int x.id.val, int x.budget.val, int x.used.val, int x.token_budget.val, int x.tokens_used.val, int x.fork_id.val, int x.sandbox.val]
+  [int x.id.val, int x.budget.val, int x.used.val, int x.token_budget.val, int x.tokens_used.val, int x.fork_id.val, int x.sandbox.val, int x.label.val]
 
 def Agent.table : Nat := 1
 def Agent.keyLen : Nat := 1
@@ -140,6 +140,7 @@ def Agent.col_token_budget : Nat := 3
 def Agent.col_tokens_used : Nat := 4
 def Agent.col_fork_id : Nat := 5
 def Agent.col_sandbox : Nat := 6
+def Agent.col_label : Nat := 7
 
 @[simp] theorem Agent.row_col_id (x : Agent) :
     (Agent.row x)[Agent.col_id]? = some (int x.id.val) := by
@@ -169,7 +170,11 @@ def Agent.col_sandbox : Nat := 6
     (Agent.row x)[Agent.col_sandbox]? = some (int x.sandbox.val) := by
   simp [Agent.row, Agent.col_sandbox]
 
-@[simp] theorem Agent.row_length (x : Agent) : (Agent.row x).length = 7 := rfl
+@[simp] theorem Agent.row_col_label (x : Agent) :
+    (Agent.row x)[Agent.col_label]? = some (int x.label.val) := by
+  simp [Agent.row, Agent.col_label]
+
+@[simp] theorem Agent.row_length (x : Agent) : (Agent.row x).length = 8 := rfl
 
 @[step] theorem Agent.to_row_spec (x : Agent) : Agent.to_row x ⦃ v => v.val = Agent.row x ⦄ := by
   have := usize_max_le
@@ -600,13 +605,213 @@ def Alert.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Alert.tabl
       (l.filter (fun y => !decide ((Alert.row y)[col]? = some val))).map Alert.row := by
   rw [List.filter_map]; rfl
 
+/-! ## `Text` (table `texts`) -/
+
+/-- Columns `id`, `kind`, `name`, `body`. -/
+def Text.row (x : Text) : List Val :=
+  [int x.id.val, int x.kind.val, .Bytes x.name, .Bytes x.body]
+
+def Text.table : Nat := 5
+def Text.keyLen : Nat := 1
+def Text.col_id : Nat := 0
+def Text.col_kind : Nat := 1
+def Text.col_name : Nat := 2
+def Text.col_body : Nat := 3
+
+@[simp] theorem Text.row_col_id (x : Text) :
+    (Text.row x)[Text.col_id]? = some (int x.id.val) := by
+  simp [Text.row, Text.col_id]
+
+@[simp] theorem Text.row_col_kind (x : Text) :
+    (Text.row x)[Text.col_kind]? = some (int x.kind.val) := by
+  simp [Text.row, Text.col_kind]
+
+@[simp] theorem Text.row_col_name (x : Text) :
+    (Text.row x)[Text.col_name]? = some (.Bytes x.name) := by
+  simp [Text.row, Text.col_name]
+
+@[simp] theorem Text.row_col_body (x : Text) :
+    (Text.row x)[Text.col_body]? = some (.Bytes x.body) := by
+  simp [Text.row, Text.col_body]
+
+@[simp] theorem Text.row_length (x : Text) : (Text.row x).length = 4 := rfl
+
+@[step] theorem Text.to_row_spec (x : Text) : Text.to_row x ⦃ v => v.val = Text.row x ⦄ := by
+  have := usize_max_le
+  unfold Text.to_row; step* <;> simp_all [Text.row] <;> scalar_tac
+
+theorem Text.row_inj : Function.Injective Text.row := by
+  intro a b h; cases a; cases b; simp_all [Text.row]
+
+theorem Text.clone_eq (x : Text) : Text.Insts.CoreCloneClone.clone x = ok x := by
+  simp [Text.Insts.CoreCloneClone.clone, u8vec_clone, lift]
+
+@[step] theorem Text.clone_spec (x : Text) : Text.Insts.CoreCloneClone.clone x ⦃ y => y = x ⦄ := by
+  rw [Text.clone_eq]; simp
+
+def Text.putA (x : Text) : AWrite Val := .put Text.table Text.keyLen (Text.row x)
+
+@[step] theorem Text.sql_put_spec (x : Text) : Text.sql_put x ⦃ w => sqlW w = Text.putA x ⦄ := by
+  unfold Text.sql_put; step*; simp_all [sqlW, Text.putA, Text.table, Text.keyLen, Text.TABLE, Text.KEY_LEN]
+
+/-- Insert, or replace the row with the same key. -/
+@[step] theorem Text.put_spec (v : alloc.vec.Vec Text) (x : Text) (h : v.length < Usize.max) :
+    Text.put v x ⦃ v' => v'.val = upsert (fun y => y.id) x v.val ⦄ := by
+  unfold Text.put Text.put_loop
+  apply WP.spec_mono (loop_search v.val (fun q => decide (q.id = x.id))
+    (fun y : alloc.vec.Vec Text => y.val) (fun j _ => v.val.set j x) (v.val ++ [x]) _ ?_ 0#usize (by simp))
+  · intro r hr; rw [hr, show ((0#usize : Usize) : Nat) = 0 from rfl]
+    exact upsert_loop_result (fun y => y.id) x _ 0 (Nat.zero_le _) (by simp)
+  · intro j hj; unfold Text.put_loop.body; h5i_step
+
+/-- The rows without this key. -/
+@[step] theorem Text.del_spec (v : alloc.vec.Vec Text) (id : U64) :
+    Text.del v id ⦃ v' => v'.val = v.val.filter (fun y => ¬(y.id = id)) ⦄ := by
+  unfold Text.del Text.del_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Text => w.val)
+    (fun acc y => if decide ¬(y.id = id) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Text.del_loop.body v id x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Text.del_loop.body; h5i_step
+
+/-- The rows whose column `col` does not hold `val`. -/
+@[step] theorem Text.del_where_spec (v : alloc.vec.Vec Text) (col : U32) (val : Val) :
+    Text.del_where v col val ⦃ v' => v'.val = v.val.filter (fun y => ¬((Text.row y)[col.val]? = some val)) ⦄ := by
+  unfold Text.del_where Text.del_where_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Text => w.val)
+    (fun acc y => if decide ¬((Text.row y)[col.val]? = some val) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Text.del_where_loop.body v col val x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Text.del_where_loop.body; h5i_step
+
+def Text.delA (id : U64) : AWrite Val := .del Text.table [int id.val]
+def Text.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Text.table col val
+
+@[step] theorem Text.sql_del_spec (id : U64) : Text.sql_del id ⦃ w => sqlW w = Text.delA id ⦄ := by
+  unfold Text.sql_del; step* <;> simp_all [sqlW, Text.delA, Text.table, Text.TABLE] <;> scalar_tac
+
+@[step] theorem Text.sql_del_where_spec (col : U32) (val : Val) :
+    Text.sql_del_where col val ⦃ w => sqlW w = Text.delWhereA col.val val ⦄ := by
+  unfold Text.sql_del_where; simp [sqlW, Text.delWhereA, Text.table, Text.TABLE]
+
+/-! Row writes on the encoding match the list operations. -/
+
+@[simp] theorem Text.map_put (x : Text) (l : List Text) :
+    upsert (·.take 1) (Text.row x) (l.map Text.row) = (upsert (fun y => y.id) x l).map Text.row :=
+  map_upsert _ _ _ _ _ (fun y => by simp [Text.row])
+
+@[simp] theorem Text.map_del (id : U64) (l : List Text) :
+    (l.map Text.row).filter (fun r => !decide (r.take 1 = [int id.val])) =
+      (l.filter (fun y => !decide (y.id = id))).map Text.row :=
+  map_filter_of _ _ _ _ (fun y => by simp [Text.row])
+
+@[simp] theorem Text.map_del_where (col : Nat) (val : Val) (l : List Text) :
+    (l.map Text.row).filter (fun r => !decide (r[col]? = some val)) =
+      (l.filter (fun y => !decide ((Text.row y)[col]? = some val))).map Text.row := by
+  rw [List.filter_map]; rfl
+
+/-! ## `Curve` (table `curves`) -/
+
+/-- Columns `id`, `body`. -/
+def Curve.row (x : Curve) : List Val :=
+  [int x.id.val, .Bytes x.body]
+
+def Curve.table : Nat := 6
+def Curve.keyLen : Nat := 1
+def Curve.col_id : Nat := 0
+def Curve.col_body : Nat := 1
+
+@[simp] theorem Curve.row_col_id (x : Curve) :
+    (Curve.row x)[Curve.col_id]? = some (int x.id.val) := by
+  simp [Curve.row, Curve.col_id]
+
+@[simp] theorem Curve.row_col_body (x : Curve) :
+    (Curve.row x)[Curve.col_body]? = some (.Bytes x.body) := by
+  simp [Curve.row, Curve.col_body]
+
+@[simp] theorem Curve.row_length (x : Curve) : (Curve.row x).length = 2 := rfl
+
+@[step] theorem Curve.to_row_spec (x : Curve) : Curve.to_row x ⦃ v => v.val = Curve.row x ⦄ := by
+  have := usize_max_le
+  unfold Curve.to_row; step* <;> simp_all [Curve.row] <;> scalar_tac
+
+theorem Curve.row_inj : Function.Injective Curve.row := by
+  intro a b h; cases a; cases b; simp_all [Curve.row]
+
+theorem Curve.clone_eq (x : Curve) : Curve.Insts.CoreCloneClone.clone x = ok x := by
+  simp [Curve.Insts.CoreCloneClone.clone, u8vec_clone, lift]
+
+@[step] theorem Curve.clone_spec (x : Curve) : Curve.Insts.CoreCloneClone.clone x ⦃ y => y = x ⦄ := by
+  rw [Curve.clone_eq]; simp
+
+def Curve.putA (x : Curve) : AWrite Val := .put Curve.table Curve.keyLen (Curve.row x)
+
+@[step] theorem Curve.sql_put_spec (x : Curve) : Curve.sql_put x ⦃ w => sqlW w = Curve.putA x ⦄ := by
+  unfold Curve.sql_put; step*; simp_all [sqlW, Curve.putA, Curve.table, Curve.keyLen, Curve.TABLE, Curve.KEY_LEN]
+
+/-- Insert, or replace the row with the same key. -/
+@[step] theorem Curve.put_spec (v : alloc.vec.Vec Curve) (x : Curve) (h : v.length < Usize.max) :
+    Curve.put v x ⦃ v' => v'.val = upsert (fun y => y.id) x v.val ⦄ := by
+  unfold Curve.put Curve.put_loop
+  apply WP.spec_mono (loop_search v.val (fun q => decide (q.id = x.id))
+    (fun y : alloc.vec.Vec Curve => y.val) (fun j _ => v.val.set j x) (v.val ++ [x]) _ ?_ 0#usize (by simp))
+  · intro r hr; rw [hr, show ((0#usize : Usize) : Nat) = 0 from rfl]
+    exact upsert_loop_result (fun y => y.id) x _ 0 (Nat.zero_le _) (by simp)
+  · intro j hj; unfold Curve.put_loop.body; h5i_step
+
+/-- The rows without this key. -/
+@[step] theorem Curve.del_spec (v : alloc.vec.Vec Curve) (id : U64) :
+    Curve.del v id ⦃ v' => v'.val = v.val.filter (fun y => ¬(y.id = id)) ⦄ := by
+  unfold Curve.del Curve.del_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Curve => w.val)
+    (fun acc y => if decide ¬(y.id = id) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Curve.del_loop.body v id x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Curve.del_loop.body; h5i_step
+
+/-- The rows whose column `col` does not hold `val`. -/
+@[step] theorem Curve.del_where_spec (v : alloc.vec.Vec Curve) (col : U32) (val : Val) :
+    Curve.del_where v col val ⦃ v' => v'.val = v.val.filter (fun y => ¬((Curve.row y)[col.val]? = some val)) ⦄ := by
+  unfold Curve.del_where Curve.del_where_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Curve => w.val)
+    (fun acc y => if decide ¬((Curve.row y)[col.val]? = some val) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Curve.del_where_loop.body v col val x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Curve.del_where_loop.body; h5i_step
+
+def Curve.delA (id : U64) : AWrite Val := .del Curve.table [int id.val]
+def Curve.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Curve.table col val
+
+@[step] theorem Curve.sql_del_spec (id : U64) : Curve.sql_del id ⦃ w => sqlW w = Curve.delA id ⦄ := by
+  unfold Curve.sql_del; step* <;> simp_all [sqlW, Curve.delA, Curve.table, Curve.TABLE] <;> scalar_tac
+
+@[step] theorem Curve.sql_del_where_spec (col : U32) (val : Val) :
+    Curve.sql_del_where col val ⦃ w => sqlW w = Curve.delWhereA col.val val ⦄ := by
+  unfold Curve.sql_del_where; simp [sqlW, Curve.delWhereA, Curve.table, Curve.TABLE]
+
+/-! Row writes on the encoding match the list operations. -/
+
+@[simp] theorem Curve.map_put (x : Curve) (l : List Curve) :
+    upsert (·.take 1) (Curve.row x) (l.map Curve.row) = (upsert (fun y => y.id) x l).map Curve.row :=
+  map_upsert _ _ _ _ _ (fun y => by simp [Curve.row])
+
+@[simp] theorem Curve.map_del (id : U64) (l : List Curve) :
+    (l.map Curve.row).filter (fun r => !decide (r.take 1 = [int id.val])) =
+      (l.filter (fun y => !decide (y.id = id))).map Curve.row :=
+  map_filter_of _ _ _ _ (fun y => by simp [Curve.row])
+
+@[simp] theorem Curve.map_del_where (col : Nat) (val : Val) (l : List Curve) :
+    (l.map Curve.row).filter (fun r => !decide (r[col]? = some val)) =
+      (l.filter (fun y => !decide ((Curve.row y)[col]? = some val))).map Curve.row := by
+  rw [List.filter_map]; rfl
+
 /-! ## `Pending` (table `pendings`) -/
 
 /-- Columns `id`, `family`, `agent`, `code`, `params`, `decision_time`, `open`. -/
 def Pending.row (x : Pending) : List Val :=
   [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.decision_time.val, int x.open.val]
 
-def Pending.table : Nat := 5
+def Pending.table : Nat := 7
 def Pending.keyLen : Nat := 1
 def Pending.col_id : Nat := 0
 def Pending.col_family : Nat := 1
@@ -726,7 +931,7 @@ def Pending.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Pending.
 def Trial.row (x : Trial) : List Val :=
   [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.data_version.val, int x.decision_time.val, int x.score.val, int x.sharpe.val, int x.skew.val, int x.kurt.val, int x.samples.val, int x.tokens.val]
 
-def Trial.table : Nat := 6
+def Trial.table : Nat := 8
 def Trial.keyLen : Nat := 1
 def Trial.col_id : Nat := 0
 def Trial.col_family : Nat := 1
@@ -876,7 +1081,7 @@ def Trial.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Trial.tabl
 macro "row_tac" : tactic => `(tactic| (
   repeat (first
     | (step*; done)
-    | (simp_all only [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row, List.getElem_cons_zero, List.getElem_cons_succ, Nat.zero_add, Nat.reduceAdd, bind_tc_ok, u64_from_val, bytes_from_val]; step*))
+    | (simp_all only [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Text.row, Curve.row, Pending.row, Trial.row, List.getElem_cons_zero, List.getElem_cons_succ, Nat.zero_add, Nat.reduceAdd, bind_tc_ok, u64_from_val, bytes_from_val]; step*))
   all_goals simp_all))
 
 theorem Meta.from_row_spec (x : Meta) (v : alloc.vec.Vec Val) (h : v.val = Meta.row x) :
@@ -886,7 +1091,7 @@ theorem Meta.from_row_spec (x : Meta) (v : alloc.vec.Vec Val) (h : v.val = Meta.
 
 theorem Agent.from_row_spec (x : Agent) (v : alloc.vec.Vec Val) (h : v.val = Agent.row x) :
     Agent.from_row v ⦃ o => o = some x ⦄ := by
-  have hl : v.length = 7 := by simp [alloc.vec.Vec.length, h, Agent.row]
+  have hl : v.length = 8 := by simp [alloc.vec.Vec.length, h, Agent.row]
   unfold Agent.from_row; row_tac
 
 theorem Family.from_row_spec (x : Family) (v : alloc.vec.Vec Val) (h : v.val = Family.row x) :
@@ -903,6 +1108,16 @@ theorem Alert.from_row_spec (x : Alert) (v : alloc.vec.Vec Val) (h : v.val = Ale
     Alert.from_row v ⦃ o => o = some x ⦄ := by
   have hl : v.length = 3 := by simp [alloc.vec.Vec.length, h, Alert.row]
   unfold Alert.from_row; row_tac
+
+theorem Text.from_row_spec (x : Text) (v : alloc.vec.Vec Val) (h : v.val = Text.row x) :
+    Text.from_row v ⦃ o => o = some x ⦄ := by
+  have hl : v.length = 4 := by simp [alloc.vec.Vec.length, h, Text.row]
+  unfold Text.from_row; row_tac
+
+theorem Curve.from_row_spec (x : Curve) (v : alloc.vec.Vec Val) (h : v.val = Curve.row x) :
+    Curve.from_row v ⦃ o => o = some x ⦄ := by
+  have hl : v.length = 2 := by simp [alloc.vec.Vec.length, h, Curve.row]
+  unfold Curve.from_row; row_tac
 
 theorem Pending.from_row_spec (x : Pending) (v : alloc.vec.Vec Val) (h : v.val = Pending.row x) :
     Pending.from_row v ⦃ o => o = some x ⦄ := by
@@ -1000,6 +1215,38 @@ theorem Alert.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : Lis
   step with hl
   simp [ok1_post, l_post]
 
+theorem Text.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Text)
+    (h : rows.val.map (·.val) = l.map Text.row) :
+    Text.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
+  have e : Text.from_rows_loop rows (alloc.vec.Vec.new Text) true 0#usize =
+      loop (fun x => rowsBody Text.from_row rows x.1 x.2.1 x.2.2) (alloc.vec.Vec.new Text, true, 0#usize) := by
+    unfold Text.from_rows_loop; congr 1; funext ⟨a, b, c⟩
+    simp only []; unfold Text.from_rows_loop.body rowsBody
+    dsimp only
+    split <;> (try rfl)
+    congr 1; funext v; congr 1; funext o; cases o <;> rfl
+  have hl : Text.from_rows_loop rows (alloc.vec.Vec.new Text) true 0#usize ⦃ r => r.2 = true ∧ r.1.val = l ⦄ := by
+    rw [e]; exact rows_loop Text.from_row Text.row (fun x v hv => Text.from_row_spec x v hv) rows l h
+  unfold Text.from_rows
+  step with hl
+  simp [ok1_post, l_post]
+
+theorem Curve.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Curve)
+    (h : rows.val.map (·.val) = l.map Curve.row) :
+    Curve.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
+  have e : Curve.from_rows_loop rows (alloc.vec.Vec.new Curve) true 0#usize =
+      loop (fun x => rowsBody Curve.from_row rows x.1 x.2.1 x.2.2) (alloc.vec.Vec.new Curve, true, 0#usize) := by
+    unfold Curve.from_rows_loop; congr 1; funext ⟨a, b, c⟩
+    simp only []; unfold Curve.from_rows_loop.body rowsBody
+    dsimp only
+    split <;> (try rfl)
+    congr 1; funext v; congr 1; funext o; cases o <;> rfl
+  have hl : Curve.from_rows_loop rows (alloc.vec.Vec.new Curve) true 0#usize ⦃ r => r.2 = true ∧ r.1.val = l ⦄ := by
+    rw [e]; exact rows_loop Curve.from_row Curve.row (fun x v hv => Curve.from_row_spec x v hv) rows l h
+  unfold Curve.from_rows
+  step with hl
+  simp [ok1_post, l_post]
+
 theorem Pending.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Pending)
     (h : rows.val.map (·.val) = l.map Pending.row) :
     Pending.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
@@ -1043,6 +1290,8 @@ def kl : Nat → Nat
   | 4 => 1
   | 5 => 1
   | 6 => 1
+  | 7 => 1
+  | 8 => 1
   | _ => 0
 
 @[simp] theorem kl_0 : kl 0 = 0 := rfl
@@ -1052,6 +1301,8 @@ def kl : Nat → Nat
 @[simp] theorem kl_4 : kl 4 = 1 := rfl
 @[simp] theorem kl_5 : kl 5 = 1 := rfl
 @[simp] theorem kl_6 : kl 6 = 1 := rfl
+@[simp] theorem kl_7 : kl 7 = 1 := rfl
+@[simp] theorem kl_8 : kl 8 = 1 := rfl
 
 /-- `row` encodes a value of table `t`'s row type. -/
 def IsRow : Nat → List Val → Prop
@@ -1060,26 +1311,28 @@ def IsRow : Nat → List Val → Prop
   | 2 => fun r => ∃ x : Family, r = Family.row x
   | 3 => fun r => ∃ x : Comment, r = Comment.row x
   | 4 => fun r => ∃ x : Alert, r = Alert.row x
-  | 5 => fun r => ∃ x : Pending, r = Pending.row x
-  | 6 => fun r => ∃ x : Trial, r = Trial.row x
+  | 5 => fun r => ∃ x : Text, r = Text.row x
+  | 6 => fun r => ∃ x : Curve, r = Curve.row x
+  | 7 => fun r => ∃ x : Pending, r = Pending.row x
+  | 8 => fun r => ∃ x : Trial, r = Trial.row x
   | _ => fun _ => False
 
 /-- Split a goal about table `t` into one goal per table. -/
-macro "cases_table " t:ident : tactic => `(tactic| rcases $t:ident with _ | _ | _ | _ | _ | _ | _ | $t:ident)
+macro "cases_table " t:ident : tactic => `(tactic| rcases $t:ident with _ | _ | _ | _ | _ | _ | _ | _ | _ | $t:ident)
 
 /-- A write's table writes map a state's encoding to the next: `schema_step [enc, sqlA, applyWrite]`. -/
 macro "schema_step" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
   intro s w; funext t
   cases w <;> cases_table t <;>
-    simp [applyAllW, applyW, upsert, Meta.putA, Meta.table, Meta.keyLen, Meta.row, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*] <;>
+    simp [applyAllW, applyW, upsert, Meta.putA, Meta.table, Meta.keyLen, Meta.row, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Text.putA, Text.table, Text.keyLen, Text.delA, Text.delWhereA, Curve.putA, Curve.table, Curve.keyLen, Curve.delA, Curve.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*] <;>
     first
-      | exact map_filter_of _ _ _ _ (fun y => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row])
-      | (congr 1; exact List.filter_congr (fun y _ => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row]))))
+      | exact map_filter_of _ _ _ _ (fun y => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Text.row, Curve.row, Pending.row, Trial.row])
+      | (congr 1; exact List.filter_congr (fun y _ => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Text.row, Curve.row, Pending.row, Trial.row]))))
 
 /-- Every table write is well formed: `schema_ok [sqlA]`. -/
 macro "schema_ok" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
   intro w; cases w <;>
-    simp [WriteOk, RowOk, IsRow, Meta.putA, Meta.table, Meta.keyLen, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*]))
+    simp [WriteOk, RowOk, IsRow, Meta.putA, Meta.table, Meta.keyLen, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Text.putA, Text.table, Text.keyLen, Text.delA, Text.delWhereA, Curve.putA, Curve.table, Curve.keyLen, Curve.delA, Curve.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*]))
 
 /-- A fresh tenant's tables: `schema_init [enc, init]`. -/
 macro "schema_init" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
@@ -1098,13 +1351,15 @@ def Snapshot.enc (s : Snapshot) : Tables Val
   | 2 => s.families.val.map Family.row
   | 3 => s.comments.val.map Comment.row
   | 4 => s.alerts.val.map Alert.row
-  | 5 => s.pendings.val.map Pending.row
-  | 6 => s.trials.val.map Trial.row
+  | 5 => s.texts.val.map Text.row
+  | 6 => s.curves.val.map Curve.row
+  | 7 => s.pendings.val.map Pending.row
+  | 8 => s.trials.val.map Trial.row
   | _ => []
 
 /-- A fresh tenant's snapshot. -/
 def Snapshot.empty : Snapshot :=
-  { meta := Meta.zero, agents := alloc.vec.Vec.new Agent, families := alloc.vec.Vec.new Family, pendings := alloc.vec.Vec.new Pending, trials := alloc.vec.Vec.new Trial, comments := alloc.vec.Vec.new Comment, alerts := alloc.vec.Vec.new Alert }
+  { meta := Meta.zero, agents := alloc.vec.Vec.new Agent, families := alloc.vec.Vec.new Family, pendings := alloc.vec.Vec.new Pending, trials := alloc.vec.Vec.new Trial, comments := alloc.vec.Vec.new Comment, alerts := alloc.vec.Vec.new Alert, texts := alloc.vec.Vec.new Text, curves := alloc.vec.Vec.new Curve }
 
 /-- Stored rows, table by table. -/
 def Rows.tabs (r : Rows) : Tables Val
@@ -1113,8 +1368,10 @@ def Rows.tabs (r : Rows) : Tables Val
   | 2 => r.families.val.map (·.val)
   | 3 => r.comments.val.map (·.val)
   | 4 => r.alerts.val.map (·.val)
-  | 5 => r.pendings.val.map (·.val)
-  | 6 => r.trials.val.map (·.val)
+  | 5 => r.texts.val.map (·.val)
+  | 6 => r.curves.val.map (·.val)
+  | 7 => r.pendings.val.map (·.val)
+  | 8 => r.trials.val.map (·.val)
   | _ => []
 
 theorem Snapshot.clone_eq (s : Snapshot) : Snapshot.Insts.CoreCloneClone.clone s = ok s := by
@@ -1125,13 +1382,15 @@ theorem Snapshot.clone_eq (s : Snapshot) : Snapshot.Insts.CoreCloneClone.clone s
     vec_clone_eq Pending.Insts.CoreCloneClone s.pendings Pending.clone_eq,
     vec_clone_eq Trial.Insts.CoreCloneClone s.trials Trial.clone_eq,
     vec_clone_eq Comment.Insts.CoreCloneClone s.comments Comment.clone_eq,
-    vec_clone_eq Alert.Insts.CoreCloneClone s.alerts Alert.clone_eq]
+    vec_clone_eq Alert.Insts.CoreCloneClone s.alerts Alert.clone_eq,
+    vec_clone_eq Text.Insts.CoreCloneClone s.texts Text.clone_eq,
+    vec_clone_eq Curve.Insts.CoreCloneClone s.curves Curve.clone_eq]
 
 /-- `decode` reads back tables `E` up to row order (an empty singleton table reads as its fresh row). -/
 theorem decode_spec (r : Rows) (E : Tables Val)
     (hrow : ∀ t, ∀ row ∈ E t, IsRow t row)
     (hone0 : (E 0).length = 1)
-    (hnil : ∀ t, 7 ≤ t → E t = [])
+    (hnil : ∀ t, 9 ≤ t → E t = [])
     (hR : ∀ t, (Rows.tabs r t).Perm (E t) ∨ (Rows.tabs r t = [] ∧ E t = Snapshot.enc Snapshot.empty t)) :
     decode r ⦃ o => ∃ s, o = some s ∧ ∀ t, (Snapshot.enc s t).Perm (E t) ⦄ := by
   obtain ⟨l0, n0, e0, f0⟩ := one_row Meta.row Meta.zero (Rows.tabs r 0) (E 0) hone0 (hrow 0) (hR 0)
@@ -1139,14 +1398,18 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   obtain ⟨l1, e1⟩ := exists_map Agent.row (Rows.tabs r 1) (fun row h => hrow 1 row (h1.subset h))
   have h2 : (Rows.tabs r 2).Perm (E 2) := keyed_perm (hR 2)
   obtain ⟨l2, e2⟩ := exists_map Family.row (Rows.tabs r 2) (fun row h => hrow 2 row (h2.subset h))
-  have h5 : (Rows.tabs r 5).Perm (E 5) := keyed_perm (hR 5)
-  obtain ⟨l5, e5⟩ := exists_map Pending.row (Rows.tabs r 5) (fun row h => hrow 5 row (h5.subset h))
-  have h6 : (Rows.tabs r 6).Perm (E 6) := keyed_perm (hR 6)
-  obtain ⟨l6, e6⟩ := exists_map Trial.row (Rows.tabs r 6) (fun row h => hrow 6 row (h6.subset h))
+  have h7 : (Rows.tabs r 7).Perm (E 7) := keyed_perm (hR 7)
+  obtain ⟨l7, e7⟩ := exists_map Pending.row (Rows.tabs r 7) (fun row h => hrow 7 row (h7.subset h))
+  have h8 : (Rows.tabs r 8).Perm (E 8) := keyed_perm (hR 8)
+  obtain ⟨l8, e8⟩ := exists_map Trial.row (Rows.tabs r 8) (fun row h => hrow 8 row (h8.subset h))
   have h3 : (Rows.tabs r 3).Perm (E 3) := keyed_perm (hR 3)
   obtain ⟨l3, e3⟩ := exists_map Comment.row (Rows.tabs r 3) (fun row h => hrow 3 row (h3.subset h))
   have h4 : (Rows.tabs r 4).Perm (E 4) := keyed_perm (hR 4)
   obtain ⟨l4, e4⟩ := exists_map Alert.row (Rows.tabs r 4) (fun row h => hrow 4 row (h4.subset h))
+  have h5 : (Rows.tabs r 5).Perm (E 5) := keyed_perm (hR 5)
+  obtain ⟨l5, e5⟩ := exists_map Text.row (Rows.tabs r 5) (fun row h => hrow 5 row (h5.subset h))
+  have h6 : (Rows.tabs r 6).Perm (E 6) := keyed_perm (hR 6)
+  obtain ⟨l6, e6⟩ := exists_map Curve.row (Rows.tabs r 6) (fun row h => hrow 6 row (h6.subset h))
   unfold decode
   step with Meta.from_one_spec r.meta l0 n0 e0 as ⟨ o0, h0 ⟩
   subst h0; dsimp only
@@ -1154,14 +1417,18 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   subst ho1; dsimp only
   step with Family.from_rows_spec r.families l2 e2 as ⟨ o2, v2, ho2, hv2 ⟩
   subst ho2; dsimp only
-  step with Pending.from_rows_spec r.pendings l5 e5 as ⟨ o5, v5, ho5, hv5 ⟩
-  subst ho5; dsimp only
-  step with Trial.from_rows_spec r.trials l6 e6 as ⟨ o6, v6, ho6, hv6 ⟩
-  subst ho6; dsimp only
+  step with Pending.from_rows_spec r.pendings l7 e7 as ⟨ o7, v7, ho7, hv7 ⟩
+  subst ho7; dsimp only
+  step with Trial.from_rows_spec r.trials l8 e8 as ⟨ o8, v8, ho8, hv8 ⟩
+  subst ho8; dsimp only
   step with Comment.from_rows_spec r.comments l3 e3 as ⟨ o3, v3, ho3, hv3 ⟩
   subst ho3; dsimp only
   step with Alert.from_rows_spec r.alerts l4 e4 as ⟨ o4, v4, ho4, hv4 ⟩
   subst ho4; dsimp only
+  step with Text.from_rows_spec r.texts l5 e5 as ⟨ o5, v5, ho5, hv5 ⟩
+  subst ho5; dsimp only
+  step with Curve.from_rows_spec r.curves l6 e6 as ⟨ o6, v6, ho6, hv6 ⟩
+  subst ho6; dsimp only
   refine ⟨_, rfl, fun t => ?_⟩
   match t with
   | 0 => simp only [Snapshot.enc, f0]; exact .refl _
@@ -1171,10 +1438,12 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   | 4 => simp only [Snapshot.enc, hv4]; rw [← e4]; exact h4
   | 5 => simp only [Snapshot.enc, hv5]; rw [← e5]; exact h5
   | 6 => simp only [Snapshot.enc, hv6]; rw [← e6]; exact h6
-  | t + 7 => simp only [Snapshot.enc, hnil (t + 7) (by omega)]; exact .refl _
+  | 7 => simp only [Snapshot.enc, hv7]; rw [← e7]; exact h7
+  | 8 => simp only [Snapshot.enc, hv8]; rw [← e8]; exact h8
+  | t + 9 => simp only [Snapshot.enc, hnil (t + 9) (by omega)]; exact .refl _
 
 /-- Rows in a snapshot's keyed tables; a write adds at most one. -/
-def Snapshot.size (s : Snapshot) : Nat := s.agents.length + s.families.length + s.pendings.length + s.trials.length + s.comments.length + s.alerts.length
+def Snapshot.size (s : Snapshot) : Nat := s.agents.length + s.families.length + s.pendings.length + s.trials.length + s.comments.length + s.alerts.length + s.texts.length + s.curves.length
 
 /-! ## Loading
 
@@ -1189,7 +1458,7 @@ structure Fits : Prop where
   rows : A.IsRow = IsRow
   enc : ∀ s, A.enc (toSt s) = Snapshot.enc s
   init : A.enc A.init = Snapshot.enc Snapshot.empty
-  nil : ∀ s t, 7 ≤ t → A.enc s t = []
+  nil : ∀ s t, 9 ≤ t → A.enc s t = []
 
 variable {A toSt}
 
@@ -1320,7 +1589,7 @@ variable {St : Type} (A : App St Write Val) (toSt : Snapshot → St) (ts : List 
 
 /-- Rows the compiled `SELECT` of each table returns, in any order. -/
 def Loads (db : Pg.PgDb Val) (r : Rows) : Prop :=
-  ∀ t, t < 7 → ∃ q ps R0, Pg.selectA valKind ts tv t none = some (q, ps) ∧
+  ∀ t, t < 9 → ∃ q ps R0, Pg.selectA valKind ts tv t none = some (q, ps) ∧
     Pg.selected valKind db q ps = some R0 ∧ (Rows.tabs r t).Perm R0
 
 inductive PgServed : Pg.PgDb Val → St → Prop
@@ -1339,13 +1608,13 @@ inductive PgServed : Pg.PgDb Val → St → Prop
 
 variable {A toSt ts tv Step}
 
-theorem Rows.tabs_nil (r : Rows) (t : Nat) (h : 7 ≤ t) : Rows.tabs r t = [] := by
+theorem Rows.tabs_nil (r : Rows) (t : Nat) (h : 9 ≤ t) : Rows.tabs r t = [] := by
   obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le' h
   simp only [Rows.tabs]
 
 /-- The tenant's view of a `PgServed` database is `Served`, with the same state. -/
 theorem pg_served (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : valKind tv = some .int)
-    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 7) {db : Pg.PgDb Val} {s : St}
+    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 9) {db : Pg.PgDb Val} {s : St}
     (h : PgServed A toSt ts tv Step db s) : Pg.Matches valKind ts db ∧ Served A toSt (Pg.view ts tv db) s := by
   induction h with
   | fresh hm he => exact ⟨hm, he ▸ .fresh⟩
@@ -1368,7 +1637,7 @@ theorem pg_served (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : 
 
 /-- An `Inv` kept by init, row reordering and every `Step` holds on PostgreSQL and on every load. -/
 theorem pg_loaded_inv (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : valKind tv = some .int)
-    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 7) (Inv : St → Prop) (hinit : Inv A.init)
+    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 9) (Inv : St → Prop) (hinit : Inv A.init)
     (hequiv : ∀ snap s', A.Equiv (toSt snap) s' → Inv s' → Inv (toSt snap))
     (hstep : ∀ snap ws, Step snap ws → Inv (toSt snap) → Inv (ws.val.foldl A.step (toSt snap)))
     {db : Pg.PgDb Val} {s : St} (h : PgServed A toSt ts tv Step db s) :

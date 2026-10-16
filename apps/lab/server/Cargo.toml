@@ -15,6 +15,7 @@ h5i-app-json = { git = "https://github.com/h5i-dev/h5i", tag = "v0.5.0" }
 h5i-db-service = { path = "../../../crates/h5i-db-service" }
 h5i-db-core = { path = "../../../crates/h5i-db-core" }
 h5i-db-backtest = { path = "../../../crates/h5i-db-backtest" }
+blake3 = "1"
 axum = "0.8"
 libc = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "process", "io-util", "fs"] }

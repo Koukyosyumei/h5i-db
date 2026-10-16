@@ -127,6 +127,7 @@ fn advisory_lets_a_shell_read_files_and_the_ledger_still_refuses() {
             budget: 1,
             token_budget: 1,
             sandbox: 0,
+            name: Vec::new(),
         },
     );
     snap = step(
@@ -137,14 +138,15 @@ fn advisory_lets_a_shell_read_files_and_the_ledger_still_refuses() {
             budget: 1,
             token_budget: 1,
             sandbox: 1,
+            name: Vec::new(),
         },
     );
     let (snap, created) = match k::transition(
         &agent(1),
         &snap,
         &k::Command::PreRegister {
-            hypothesis: 1,
-            method: 2,
+            hypothesis: b"h1".to_vec(),
+            method: b"m2".to_vec(),
         },
     ) {
         Ok((ws, reply)) => (k::apply(&snap, &ws), reply),
@@ -158,8 +160,9 @@ fn advisory_lets_a_shell_read_files_and_the_ledger_still_refuses() {
         &snap,
         &k::Command::RequestTrial {
             family,
-            code: 3,
-            params: 4,
+            name: b"s".to_vec(),
+            code: b"c3".to_vec(),
+            params: b"{}".to_vec(),
             decision_time: 5,
         },
     ) {
@@ -182,6 +185,7 @@ fn advisory_lets_a_shell_read_files_and_the_ledger_still_refuses() {
             kurt: 0,
             samples: 0,
             tokens: 0,
+            curve: Vec::new(),
         },
     );
     assert!(

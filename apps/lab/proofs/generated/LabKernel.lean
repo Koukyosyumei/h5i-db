@@ -182,6 +182,7 @@ structure Agent where
   tokens_used : Std.U64
   fork_id : Std.U64
   sandbox : Std.U64
+  label : Std.U64
 
 /-- [lab_kernel::Family]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 95:12-98:13
@@ -217,6 +218,22 @@ structure Alert where
   id : Std.U64
   kind : alloc.vec.Vec Std.U8
   detail : alloc.vec.Vec Std.U8
+
+/-- [lab_kernel::Text]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 95:12-98:13
+    Visibility: public -/
+structure Text where
+  id : Std.U64
+  kind : Std.U64
+  «name» : alloc.vec.Vec Std.U8
+  body : alloc.vec.Vec Std.U8
+
+/-- [lab_kernel::Curve]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 95:12-98:13
+    Visibility: public -/
+structure Curve where
+  id : Std.U64
+  body : alloc.vec.Vec Std.U8
 
 /-- [lab_kernel::Pending]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 95:12-98:13
@@ -279,15 +296,25 @@ structure Meta where
     Visibility: public -/
 @[global_simps, irreducible] def Alert.TABLE : Std.U32 := 4#u32
 
+/-- [lab_kernel::{lab_kernel::Text}::TABLE]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 135:12-135:60
+    Visibility: public -/
+@[global_simps, irreducible] def Text.TABLE : Std.U32 := 5#u32
+
+/-- [lab_kernel::{lab_kernel::Curve}::TABLE]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 135:12-135:60
+    Visibility: public -/
+@[global_simps, irreducible] def Curve.TABLE : Std.U32 := 6#u32
+
 /-- [lab_kernel::{lab_kernel::Pending}::TABLE]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 135:12-135:60
     Visibility: public -/
-@[global_simps, irreducible] def Pending.TABLE : Std.U32 := 5#u32
+@[global_simps, irreducible] def Pending.TABLE : Std.U32 := 7#u32
 
 /-- [lab_kernel::{lab_kernel::Trial}::TABLE]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 135:12-135:60
     Visibility: public -/
-@[global_simps, irreducible] def Trial.TABLE : Std.U32 := 6#u32
+@[global_simps, irreducible] def Trial.TABLE : Std.U32 := 8#u32
 
 /-- [lab_kernel::{lab_kernel::Meta}::KEY_LEN]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 136:12-136:62
@@ -313,6 +340,16 @@ structure Meta where
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 136:12-136:62
     Visibility: public -/
 @[global_simps, irreducible] def Alert.KEY_LEN : Std.U32 := 1#u32
+
+/-- [lab_kernel::{lab_kernel::Text}::KEY_LEN]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 136:12-136:62
+    Visibility: public -/
+@[global_simps, irreducible] def Text.KEY_LEN : Std.U32 := 1#u32
+
+/-- [lab_kernel::{lab_kernel::Curve}::KEY_LEN]
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 136:12-136:62
+    Visibility: public -/
+@[global_simps, irreducible] def Curve.KEY_LEN : Std.U32 := 1#u32
 
 /-- [lab_kernel::{lab_kernel::Pending}::KEY_LEN]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 136:12-136:62
@@ -341,7 +378,9 @@ def Agent.to_row (self : Agent) : Result (alloc.vec.Vec h5i_app_sql.Val) := do
   let v5 ← U64.Insts.H5i_app_sqlColumn.to_val self.fork_id
   let out5 ← alloc.vec.Vec.push out4 v5
   let v6 ← U64.Insts.H5i_app_sqlColumn.to_val self.sandbox
-  alloc.vec.Vec.push out5 v6
+  let out6 ← alloc.vec.Vec.push out5 v6
+  let v7 ← U64.Insts.H5i_app_sqlColumn.to_val self.label
+  alloc.vec.Vec.push out6 v7
 
 /-- [lab_kernel::{lab_kernel::Family}::to_row]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 138:12-143:13
@@ -399,6 +438,28 @@ def Alert.to_row (self : Alert) : Result (alloc.vec.Vec h5i_app_sql.Val) := do
   let out1 ← alloc.vec.Vec.push out v1
   let v2 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val self.detail
   alloc.vec.Vec.push out1 v2
+
+/-- [lab_kernel::{lab_kernel::Text}::to_row]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 138:12-143:13
+    Visibility: public -/
+def Text.to_row (self : Text) : Result (alloc.vec.Vec h5i_app_sql.Val) := do
+  let v ← U64.Insts.H5i_app_sqlColumn.to_val self.id
+  let out ← alloc.vec.Vec.push (alloc.vec.Vec.new h5i_app_sql.Val) v
+  let v1 ← U64.Insts.H5i_app_sqlColumn.to_val self.kind
+  let out1 ← alloc.vec.Vec.push out v1
+  let v2 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val self.name
+  let out2 ← alloc.vec.Vec.push out1 v2
+  let v3 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val self.body
+  alloc.vec.Vec.push out2 v3
+
+/-- [lab_kernel::{lab_kernel::Curve}::to_row]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 138:12-143:13
+    Visibility: public -/
+def Curve.to_row (self : Curve) : Result (alloc.vec.Vec h5i_app_sql.Val) := do
+  let v ← U64.Insts.H5i_app_sqlColumn.to_val self.id
+  let out ← alloc.vec.Vec.push (alloc.vec.Vec.new h5i_app_sql.Val) v
+  let v1 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val self.body
+  alloc.vec.Vec.push out v1
 
 /-- [lab_kernel::{lab_kernel::Pending}::to_row]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 138:12-143:13
@@ -489,7 +550,8 @@ def Agent.from_row
   let i5 ← i4 + 1#usize
   let i6 ← i5 + 1#usize
   let i7 ← i6 + 1#usize
-  if i != i7
+  let i8 ← i7 + 1#usize
+  if i != i8
   then ok none
   else
     let v ←
@@ -506,57 +568,66 @@ def Agent.from_row
       match o1 with
       | none => ok none
       | some x1 =>
-        let i8 ← i1 + 1#usize
+        let i9 ← i1 + 1#usize
         let v2 ←
           alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-            h5i_app_sql.Val) row i8
+            h5i_app_sql.Val) row i9
         let o2 ← U64.Insts.H5i_app_sqlColumn.from_val v2
         match o2 with
         | none => ok none
         | some x2 =>
-          let i9 ← i8 + 1#usize
+          let i10 ← i9 + 1#usize
           let v3 ←
             alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-              h5i_app_sql.Val) row i9
+              h5i_app_sql.Val) row i10
           let o3 ← U64.Insts.H5i_app_sqlColumn.from_val v3
           match o3 with
           | none => ok none
           | some x3 =>
-            let i10 ← i9 + 1#usize
+            let i11 ← i10 + 1#usize
             let v4 ←
               alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-                h5i_app_sql.Val) row i10
+                h5i_app_sql.Val) row i11
             let o4 ← U64.Insts.H5i_app_sqlColumn.from_val v4
             match o4 with
             | none => ok none
             | some x4 =>
-              let i11 ← i10 + 1#usize
+              let i12 ← i11 + 1#usize
               let v5 ←
                 alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-                  h5i_app_sql.Val) row i11
+                  h5i_app_sql.Val) row i12
               let o5 ← U64.Insts.H5i_app_sqlColumn.from_val v5
               match o5 with
               | none => ok none
               | some x5 =>
-                let i12 ← i11 + 1#usize
+                let i13 ← i12 + 1#usize
                 let v6 ←
                   alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-                    h5i_app_sql.Val) row i12
+                    h5i_app_sql.Val) row i13
                 let o6 ← U64.Insts.H5i_app_sqlColumn.from_val v6
                 match o6 with
                 | none => ok none
                 | some x6 =>
-                  let _ ← i12 + 1#usize
-                  ok (some
-                    {
-                      id := x,
-                      budget := x1,
-                      used := x2,
-                      token_budget := x3,
-                      tokens_used := x4,
-                      fork_id := x5,
-                      sandbox := x6
-                    })
+                  let i14 ← i13 + 1#usize
+                  let v7 ←
+                    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+                      h5i_app_sql.Val) row i14
+                  let o7 ← U64.Insts.H5i_app_sqlColumn.from_val v7
+                  match o7 with
+                  | none => ok none
+                  | some x7 =>
+                    let _ ← i14 + 1#usize
+                    ok (some
+                      {
+                        id := x,
+                        budget := x1,
+                        used := x2,
+                        token_budget := x3,
+                        tokens_used := x4,
+                        fork_id := x5,
+                        sandbox := x6,
+                        label := x7
+                      })
 
 /-- [lab_kernel::{lab_kernel::Family}::from_row]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 146:12-167:13
@@ -788,6 +859,79 @@ def Alert.from_row
         | some x2 =>
           let _ ← i4 + 1#usize
           ok (some { id := x, kind := x1, detail := x2 })
+
+/-- [lab_kernel::{lab_kernel::Text}::from_row]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 146:12-167:13
+    Visibility: public -/
+def Text.from_row
+  (row : alloc.vec.Vec h5i_app_sql.Val) : Result (Option Text) := do
+  let i := alloc.vec.Vec.len row
+  let i1 ← 0#usize + 1#usize
+  let i2 ← i1 + 1#usize
+  let i3 ← i2 + 1#usize
+  let i4 ← i3 + 1#usize
+  if i != i4
+  then ok none
+  else
+    let v ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+        h5i_app_sql.Val) row 0#usize
+    let o ← U64.Insts.H5i_app_sqlColumn.from_val v
+    match o with
+    | none => ok none
+    | some x =>
+      let v1 ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+          h5i_app_sql.Val) row i1
+      let o1 ← U64.Insts.H5i_app_sqlColumn.from_val v1
+      match o1 with
+      | none => ok none
+      | some x1 =>
+        let i5 ← i1 + 1#usize
+        let v2 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+            h5i_app_sql.Val) row i5
+        let o2 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.from_val v2
+        match o2 with
+        | none => ok none
+        | some x2 =>
+          let i6 ← i5 + 1#usize
+          let v3 ←
+            alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+              h5i_app_sql.Val) row i6
+          let o3 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.from_val v3
+          match o3 with
+          | none => ok none
+          | some x3 =>
+            let _ ← i6 + 1#usize
+            ok (some { id := x, kind := x1, «name» := x2, body := x3 })
+
+/-- [lab_kernel::{lab_kernel::Curve}::from_row]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 146:12-167:13
+    Visibility: public -/
+def Curve.from_row
+  (row : alloc.vec.Vec h5i_app_sql.Val) : Result (Option Curve) := do
+  let i := alloc.vec.Vec.len row
+  let i1 ← 0#usize + 1#usize
+  let i2 ← i1 + 1#usize
+  if i != i2
+  then ok none
+  else
+    let v ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+        h5i_app_sql.Val) row 0#usize
+    let o ← U64.Insts.H5i_app_sqlColumn.from_val v
+    match o with
+    | none => ok none
+    | some x =>
+      let v1 ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+          h5i_app_sql.Val) row i1
+      let o1 ← alloc.vec.VecU8.Insts.H5i_app_sqlColumn.from_val v1
+      match o1 with
+      | none => ok none
+      | some x1 => let _ ← i1 + 1#usize
+                   ok (some { id := x, body := x1 })
 
 /-- [lab_kernel::{lab_kernel::Pending}::from_row]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 146:12-167:13
@@ -1284,6 +1428,112 @@ def Alert.from_rows
   then ok (some out)
   else ok none
 
+/-- [lab_kernel::{lab_kernel::Text}::from_rows]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 174:16-180:17
+    Visibility: public -/
+@[rust_loop_body]
+def Text.from_rows_loop.body
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val))
+  (out : alloc.vec.Vec Text) (ok1 : Bool) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Text) × Bool × Std.Usize)
+    ((alloc.vec.Vec Text) × Bool))
+  := do
+  let i1 := alloc.vec.Vec.len rows
+  if i < i1
+  then
+    let v ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (alloc.vec.Vec
+        h5i_app_sql.Val)) rows i
+    let o ← Text.from_row v
+    let (out1, ok2) ←
+      match o with
+      | none => ok (out, false)
+      | some x => do
+                  let out2 ← alloc.vec.Vec.push out x
+                  ok (out2, ok1)
+    let i2 ← i + 1#usize
+    ok (cont (out1, ok2, i2))
+  else ok (done (out, ok1))
+
+/-- [lab_kernel::{lab_kernel::Text}::from_rows]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 174:16-180:17
+    Visibility: public -/
+@[rust_loop]
+def Text.from_rows_loop
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val))
+  (out : alloc.vec.Vec Text) (ok1 : Bool) (i : Std.Usize) :
+  Result ((alloc.vec.Vec Text) × Bool)
+  := do
+  loop
+    (fun (out1, ok2, i1) => Text.from_rows_loop.body rows out1 ok2 i1)
+    (out, ok1, i)
+
+/-- [lab_kernel::{lab_kernel::Text}::from_rows]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 170:12-186:13
+    Visibility: public -/
+def Text.from_rows
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)) :
+  Result (Option (alloc.vec.Vec Text))
+  := do
+  let (out, ok1) ←
+    Text.from_rows_loop rows (alloc.vec.Vec.new Text) true 0#usize
+  if ok1
+  then ok (some out)
+  else ok none
+
+/-- [lab_kernel::{lab_kernel::Curve}::from_rows]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 174:16-180:17
+    Visibility: public -/
+@[rust_loop_body]
+def Curve.from_rows_loop.body
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val))
+  (out : alloc.vec.Vec Curve) (ok1 : Bool) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Curve) × Bool × Std.Usize)
+    ((alloc.vec.Vec Curve) × Bool))
+  := do
+  let i1 := alloc.vec.Vec.len rows
+  if i < i1
+  then
+    let v ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (alloc.vec.Vec
+        h5i_app_sql.Val)) rows i
+    let o ← Curve.from_row v
+    let (out1, ok2) ←
+      match o with
+      | none => ok (out, false)
+      | some x => do
+                  let out2 ← alloc.vec.Vec.push out x
+                  ok (out2, ok1)
+    let i2 ← i + 1#usize
+    ok (cont (out1, ok2, i2))
+  else ok (done (out, ok1))
+
+/-- [lab_kernel::{lab_kernel::Curve}::from_rows]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 174:16-180:17
+    Visibility: public -/
+@[rust_loop]
+def Curve.from_rows_loop
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val))
+  (out : alloc.vec.Vec Curve) (ok1 : Bool) (i : Std.Usize) :
+  Result ((alloc.vec.Vec Curve) × Bool)
+  := do
+  loop
+    (fun (out1, ok2, i1) => Curve.from_rows_loop.body rows out1 ok2 i1)
+    (out, ok1, i)
+
+/-- [lab_kernel::{lab_kernel::Curve}::from_rows]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 170:12-186:13
+    Visibility: public -/
+def Curve.from_rows
+  (rows : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)) :
+  Result (Option (alloc.vec.Vec Curve))
+  := do
+  let (out, ok1) ←
+    Curve.from_rows_loop rows (alloc.vec.Vec.new Curve) true 0#usize
+  if ok1
+  then ok (some out)
+  else ok none
+
 /-- [lab_kernel::{lab_kernel::Pending}::from_rows]: loop body 0:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 174:16-180:17
     Visibility: public -/
@@ -1424,6 +1674,20 @@ def Comment.sql_put (self : Comment) : Result h5i_app_sql.Write := do
 def Alert.sql_put (self : Alert) : Result h5i_app_sql.Write := do
   let v ← Alert.to_row self
   ok (h5i_app_sql.Write.Put Alert.TABLE Alert.KEY_LEN v)
+
+/-- [lab_kernel::{lab_kernel::Text}::sql_put]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 189:12-191:13
+    Visibility: public -/
+def Text.sql_put (self : Text) : Result h5i_app_sql.Write := do
+  let v ← Text.to_row self
+  ok (h5i_app_sql.Write.Put Text.TABLE Text.KEY_LEN v)
+
+/-- [lab_kernel::{lab_kernel::Curve}::sql_put]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 189:12-191:13
+    Visibility: public -/
+def Curve.sql_put (self : Curve) : Result h5i_app_sql.Write := do
+  let v ← Curve.to_row self
+  ok (h5i_app_sql.Write.Put Curve.TABLE Curve.KEY_LEN v)
 
 /-- [lab_kernel::{lab_kernel::Pending}::sql_put]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 189:12-191:13
@@ -1642,6 +1906,96 @@ def Alert.put
   (v : alloc.vec.Vec Alert) (x : Alert) : Result (alloc.vec.Vec Alert) := do
   Alert.put_loop v x 0#usize
 
+/-- [lab_kernel::{lab_kernel::Text}::put]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 220:16-228:13
+    Visibility: public -/
+@[rust_loop_body]
+def Text.put_loop.body
+  (v : alloc.vec.Vec Text) (x : Text) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize (alloc.vec.Vec Text))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let t ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Text) v i
+    if t.id = x.id
+    then
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Text) v
+          i
+      let v1 := index_mut_back x
+      ok (done v1)
+    else let i2 ← i + 1#usize
+         ok (cont i2)
+  else let v1 ← alloc.vec.Vec.push v x
+       ok (done v1)
+
+/-- [lab_kernel::{lab_kernel::Text}::put]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 220:16-228:13
+    Visibility: public -/
+@[rust_loop]
+def Text.put_loop
+  (v : alloc.vec.Vec Text) (x : Text) (i : Std.Usize) :
+  Result (alloc.vec.Vec Text)
+  := do
+  loop
+    (fun i1 => Text.put_loop.body v x i1)
+    i
+
+/-- [lab_kernel::{lab_kernel::Text}::put]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 218:12-228:13
+    Visibility: public -/
+@[reducible]
+def Text.put
+  (v : alloc.vec.Vec Text) (x : Text) : Result (alloc.vec.Vec Text) := do
+  Text.put_loop v x 0#usize
+
+/-- [lab_kernel::{lab_kernel::Curve}::put]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 220:16-228:13
+    Visibility: public -/
+@[rust_loop_body]
+def Curve.put_loop.body
+  (v : alloc.vec.Vec Curve) (x : Curve) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize (alloc.vec.Vec Curve))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let c ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Curve) v i
+    if c.id = x.id
+    then
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Curve) v
+          i
+      let v1 := index_mut_back x
+      ok (done v1)
+    else let i2 ← i + 1#usize
+         ok (cont i2)
+  else let v1 ← alloc.vec.Vec.push v x
+       ok (done v1)
+
+/-- [lab_kernel::{lab_kernel::Curve}::put]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 220:16-228:13
+    Visibility: public -/
+@[rust_loop]
+def Curve.put_loop
+  (v : alloc.vec.Vec Curve) (x : Curve) (i : Std.Usize) :
+  Result (alloc.vec.Vec Curve)
+  := do
+  loop
+    (fun i1 => Curve.put_loop.body v x i1)
+    i
+
+/-- [lab_kernel::{lab_kernel::Curve}::put]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 218:12-228:13
+    Visibility: public -/
+@[reducible]
+def Curve.put
+  (v : alloc.vec.Vec Curve) (x : Curve) : Result (alloc.vec.Vec Curve) := do
+  Curve.put_loop v x 0#usize
+
 /-- [lab_kernel::{lab_kernel::Pending}::put]: loop body 0:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 220:16-228:13
     Visibility: public -/
@@ -1735,7 +2089,7 @@ def Trial.put
   Trial.put_loop v x 0#usize
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Agent}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 69:13-69:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 79:13-79:18
     Visibility: public -/
 def Agent.Insts.CoreCloneClone.clone (self : Agent) : Result Agent := do
   ok self
@@ -1788,7 +2142,7 @@ def Agent.del
   Agent.del_loop v id (alloc.vec.Vec.new Agent) 0#usize
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Family}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 80:13-80:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 92:13-92:18
     Visibility: public -/
 def Family.Insts.CoreCloneClone.clone (self : Family) : Result Family := do
   ok self
@@ -1843,7 +2197,7 @@ def Family.del
   Family.del_loop v id (alloc.vec.Vec.new Family) 0#usize
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Comment}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 99:13-99:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 112:13-112:18
     Visibility: public -/
 def Comment.Insts.CoreCloneClone.clone (self : Comment) : Result Comment := do
   let i ← lift (core.clone.impls.CloneU64.clone self.id)
@@ -1902,7 +2256,7 @@ def Comment.del
   Comment.del_loop v id (alloc.vec.Vec.new Comment) 0#usize
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Alert}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 108:13-108:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 121:13-121:18
     Visibility: public -/
 def Alert.Insts.CoreCloneClone.clone (self : Alert) : Result Alert := do
   let i ← lift (core.clone.impls.CloneU64.clone self.id)
@@ -1957,8 +2311,119 @@ def Alert.del
   (v : alloc.vec.Vec Alert) (id : Std.U64) : Result (alloc.vec.Vec Alert) := do
   Alert.del_loop v id (alloc.vec.Vec.new Alert) 0#usize
 
+/-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Text}::clone]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 132:13-132:18
+    Visibility: public -/
+def Text.Insts.CoreCloneClone.clone (self : Text) : Result Text := do
+  let i ← lift (core.clone.impls.CloneU64.clone self.id)
+  let i1 ← lift (core.clone.impls.CloneU64.clone self.kind)
+  let v ← alloc.vec.CloneVec.clone core.clone.CloneU8 self.name
+  let v1 ← alloc.vec.CloneVec.clone core.clone.CloneU8 self.body
+  ok { id := i, kind := i1, «name» := v, body := v1 }
+
+/-- [lab_kernel::{lab_kernel::Text}::del]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 234:16-239:17
+    Visibility: public -/
+@[rust_loop_body]
+def Text.del_loop.body
+  (v : alloc.vec.Vec Text) (id : Std.U64) (out : alloc.vec.Vec Text)
+  (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Text) × Std.Usize) (alloc.vec.Vec Text))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let t ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Text) v i
+    let out1 ←
+      if t.id = id
+      then ok out
+      else
+        do
+        let t1 ← Text.Insts.CoreCloneClone.clone t
+        alloc.vec.Vec.push out t1
+    let i2 ← i + 1#usize
+    ok (cont (out1, i2))
+  else ok (done out)
+
+/-- [lab_kernel::{lab_kernel::Text}::del]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 234:16-239:17
+    Visibility: public -/
+@[rust_loop]
+def Text.del_loop
+  (v : alloc.vec.Vec Text) (id : Std.U64) (out : alloc.vec.Vec Text)
+  (i : Std.Usize) :
+  Result (alloc.vec.Vec Text)
+  := do
+  loop
+    (fun (out1, i1) => Text.del_loop.body v id out1 i1)
+    (out, i)
+
+/-- [lab_kernel::{lab_kernel::Text}::del]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 231:12-241:13
+    Visibility: public -/
+@[reducible]
+def Text.del
+  (v : alloc.vec.Vec Text) (id : Std.U64) : Result (alloc.vec.Vec Text) := do
+  Text.del_loop v id (alloc.vec.Vec.new Text) 0#usize
+
+/-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Curve}::clone]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 143:13-143:18
+    Visibility: public -/
+def Curve.Insts.CoreCloneClone.clone (self : Curve) : Result Curve := do
+  let i ← lift (core.clone.impls.CloneU64.clone self.id)
+  let v ← alloc.vec.CloneVec.clone core.clone.CloneU8 self.body
+  ok { id := i, body := v }
+
+/-- [lab_kernel::{lab_kernel::Curve}::del]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 234:16-239:17
+    Visibility: public -/
+@[rust_loop_body]
+def Curve.del_loop.body
+  (v : alloc.vec.Vec Curve) (id : Std.U64) (out : alloc.vec.Vec Curve)
+  (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Curve) × Std.Usize) (alloc.vec.Vec
+    Curve))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let c ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Curve) v i
+    let out1 ←
+      if c.id = id
+      then ok out
+      else
+        do
+        let c1 ← Curve.Insts.CoreCloneClone.clone c
+        alloc.vec.Vec.push out c1
+    let i2 ← i + 1#usize
+    ok (cont (out1, i2))
+  else ok (done out)
+
+/-- [lab_kernel::{lab_kernel::Curve}::del]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 234:16-239:17
+    Visibility: public -/
+@[rust_loop]
+def Curve.del_loop
+  (v : alloc.vec.Vec Curve) (id : Std.U64) (out : alloc.vec.Vec Curve)
+  (i : Std.Usize) :
+  Result (alloc.vec.Vec Curve)
+  := do
+  loop
+    (fun (out1, i1) => Curve.del_loop.body v id out1 i1)
+    (out, i)
+
+/-- [lab_kernel::{lab_kernel::Curve}::del]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 231:12-241:13
+    Visibility: public -/
+@[reducible]
+def Curve.del
+  (v : alloc.vec.Vec Curve) (id : Std.U64) : Result (alloc.vec.Vec Curve) := do
+  Curve.del_loop v id (alloc.vec.Vec.new Curve) 0#usize
+
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Pending}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 115:13-115:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 149:13-149:18
     Visibility: public -/
 def Pending.Insts.CoreCloneClone.clone (self : Pending) : Result Pending := do
   ok self
@@ -2013,7 +2478,7 @@ def Pending.del
   Pending.del_loop v id (alloc.vec.Vec.new Pending) 0#usize
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Trial}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 126:13-126:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 161:13-161:18
     Visibility: public -/
 def Trial.Insts.CoreCloneClone.clone (self : Trial) : Result Trial := do
   ok self
@@ -2269,6 +2734,107 @@ def Alert.del_where
   := do
   Alert.del_where_loop v col val (alloc.vec.Vec.new Alert) 0#usize
 
+/-- [lab_kernel::{lab_kernel::Text}::del_where]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 247:16-252:17
+    Visibility: public -/
+@[rust_loop_body]
+def Text.del_where_loop.body
+  (v : alloc.vec.Vec Text) (col : Std.U32) (val : h5i_app_sql.Val)
+  (out : alloc.vec.Vec Text) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Text) × Std.Usize) (alloc.vec.Vec Text))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let t ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Text) v i
+    let v1 ← Text.to_row t
+    let b ← h5i_app_sql.has_col v1 col val
+    let out1 ←
+      if b
+      then ok out
+      else
+        do
+        let t1 ← Text.Insts.CoreCloneClone.clone t
+        alloc.vec.Vec.push out t1
+    let i2 ← i + 1#usize
+    ok (cont (out1, i2))
+  else ok (done out)
+
+/-- [lab_kernel::{lab_kernel::Text}::del_where]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 247:16-252:17
+    Visibility: public -/
+@[rust_loop]
+def Text.del_where_loop
+  (v : alloc.vec.Vec Text) (col : Std.U32) (val : h5i_app_sql.Val)
+  (out : alloc.vec.Vec Text) (i : Std.Usize) :
+  Result (alloc.vec.Vec Text)
+  := do
+  loop
+    (fun (out1, i1) => Text.del_where_loop.body v col val out1 i1)
+    (out, i)
+
+/-- [lab_kernel::{lab_kernel::Text}::del_where]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 244:12-254:13
+    Visibility: public -/
+@[reducible]
+def Text.del_where
+  (v : alloc.vec.Vec Text) (col : Std.U32) (val : h5i_app_sql.Val) :
+  Result (alloc.vec.Vec Text)
+  := do
+  Text.del_where_loop v col val (alloc.vec.Vec.new Text) 0#usize
+
+/-- [lab_kernel::{lab_kernel::Curve}::del_where]: loop body 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 247:16-252:17
+    Visibility: public -/
+@[rust_loop_body]
+def Curve.del_where_loop.body
+  (v : alloc.vec.Vec Curve) (col : Std.U32) (val : h5i_app_sql.Val)
+  (out : alloc.vec.Vec Curve) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Curve) × Std.Usize) (alloc.vec.Vec
+    Curve))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let c ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Curve) v i
+    let v1 ← Curve.to_row c
+    let b ← h5i_app_sql.has_col v1 col val
+    let out1 ←
+      if b
+      then ok out
+      else
+        do
+        let c1 ← Curve.Insts.CoreCloneClone.clone c
+        alloc.vec.Vec.push out c1
+    let i2 ← i + 1#usize
+    ok (cont (out1, i2))
+  else ok (done out)
+
+/-- [lab_kernel::{lab_kernel::Curve}::del_where]: loop 0:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 247:16-252:17
+    Visibility: public -/
+@[rust_loop]
+def Curve.del_where_loop
+  (v : alloc.vec.Vec Curve) (col : Std.U32) (val : h5i_app_sql.Val)
+  (out : alloc.vec.Vec Curve) (i : Std.Usize) :
+  Result (alloc.vec.Vec Curve)
+  := do
+  loop
+    (fun (out1, i1) => Curve.del_where_loop.body v col val out1 i1)
+    (out, i)
+
+/-- [lab_kernel::{lab_kernel::Curve}::del_where]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 244:12-254:13
+    Visibility: public -/
+@[reducible]
+def Curve.del_where
+  (v : alloc.vec.Vec Curve) (col : Std.U32) (val : h5i_app_sql.Val) :
+  Result (alloc.vec.Vec Curve)
+  := do
+  Curve.del_where_loop v col val (alloc.vec.Vec.new Curve) 0#usize
+
 /-- [lab_kernel::{lab_kernel::Pending}::del_where]: loop body 0:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 247:16-252:17
     Visibility: public -/
@@ -2403,6 +2969,22 @@ def Alert.sql_del (id : Std.U64) : Result h5i_app_sql.Write := do
   let key ← alloc.vec.Vec.push (alloc.vec.Vec.new h5i_app_sql.Val) v
   ok (h5i_app_sql.Write.Del Alert.TABLE key)
 
+/-- [lab_kernel::{lab_kernel::Text}::sql_del]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 257:12-261:13
+    Visibility: public -/
+def Text.sql_del (id : Std.U64) : Result h5i_app_sql.Write := do
+  let v ← U64.Insts.H5i_app_sqlColumn.to_val id
+  let key ← alloc.vec.Vec.push (alloc.vec.Vec.new h5i_app_sql.Val) v
+  ok (h5i_app_sql.Write.Del Text.TABLE key)
+
+/-- [lab_kernel::{lab_kernel::Curve}::sql_del]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 257:12-261:13
+    Visibility: public -/
+def Curve.sql_del (id : Std.U64) : Result h5i_app_sql.Write := do
+  let v ← U64.Insts.H5i_app_sqlColumn.to_val id
+  let key ← alloc.vec.Vec.push (alloc.vec.Vec.new h5i_app_sql.Val) v
+  ok (h5i_app_sql.Write.Del Curve.TABLE key)
+
 /-- [lab_kernel::{lab_kernel::Pending}::sql_del]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 257:12-261:13
     Visibility: public -/
@@ -2447,6 +3029,20 @@ def Alert.sql_del_where
   (col : Std.U32) (val : h5i_app_sql.Val) : Result h5i_app_sql.Write := do
   ok (h5i_app_sql.Write.DelWhere Alert.TABLE col val)
 
+/-- [lab_kernel::{lab_kernel::Text}::sql_del_where]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 264:12-266:13
+    Visibility: public -/
+def Text.sql_del_where
+  (col : Std.U32) (val : h5i_app_sql.Val) : Result h5i_app_sql.Write := do
+  ok (h5i_app_sql.Write.DelWhere Text.TABLE col val)
+
+/-- [lab_kernel::{lab_kernel::Curve}::sql_del_where]:
+    Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 264:12-266:13
+    Visibility: public -/
+def Curve.sql_del_where
+  (col : Std.U32) (val : h5i_app_sql.Val) : Result h5i_app_sql.Write := do
+  ok (h5i_app_sql.Write.DelWhere Curve.TABLE col val)
+
 /-- [lab_kernel::{lab_kernel::Pending}::sql_del_where]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 264:12-266:13
     Visibility: public -/
@@ -2472,6 +3068,8 @@ structure Snapshot where
   trials : alloc.vec.Vec Trial
   comments : alloc.vec.Vec Comment
   alerts : alloc.vec.Vec Alert
+  texts : alloc.vec.Vec Text
+  curves : alloc.vec.Vec Curve
 
 /-- [lab_kernel::Rows]
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 284:8-286:9
@@ -2484,6 +3082,8 @@ structure Rows where
   trials : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)
   comments : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)
   alerts : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)
+  texts : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)
+  curves : alloc.vec.Vec (alloc.vec.Vec h5i_app_sql.Val)
 
 /-- [lab_kernel::decode]:
     Source: '/cargo/git/checkouts/h5i-65ea82406b9a50c7/d337c3c/crates/h5i-app-schema/src/lib.rs', lines 289:8-297:9
@@ -2517,19 +3117,29 @@ def decode (r : Rows) : Result (Option Snapshot) := do
               match o6 with
               | none => ok none
               | some x6 =>
-                ok (some
-                  {
-                    «meta» := x,
-                    agents := x1,
-                    families := x2,
-                    pendings := x3,
-                    trials := x4,
-                    comments := x5,
-                    alerts := x6
-                  })
+                let o7 ← Text.from_rows r.texts
+                match o7 with
+                | none => ok none
+                | some x7 =>
+                  let o8 ← Curve.from_rows r.curves
+                  match o8 with
+                  | none => ok none
+                  | some x8 =>
+                    ok (some
+                      {
+                        «meta» := x,
+                        agents := x1,
+                        families := x2,
+                        pendings := x3,
+                        trials := x4,
+                        comments := x5,
+                        alerts := x6,
+                        texts := x7,
+                        curves := x8
+                      })
 
 /-- [lab_kernel::Effect]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 147:0-151:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 182:0-186:1
     Visibility: public -/
 structure Effect where
   dest : Std.U64
@@ -2537,7 +3147,7 @@ structure Effect where
   id : Std.U64
 
 /-- [lab_kernel::Write]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 154:0-163:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 189:0-200:1
     Visibility: public -/
 @[discriminant isize]
 inductive Write where
@@ -2548,10 +3158,12 @@ inductive Write where
 | PutTrial : Trial → Write
 | PutComment : Comment → Write
 | PutAlert : Alert → Write
+| PutText : Text → Write
+| PutCurve : Curve → Write
 | Emit : Effect → Write
 
 /-- [lab_kernel::apply_write]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 891:0-902:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1083:0-1096:1 -/
 def apply_write (s : Snapshot) (w : Write) : Result Snapshot := do
   match w with
   | Write.SetMeta m => ok { s with «meta» := m }
@@ -2573,22 +3185,27 @@ def apply_write (s : Snapshot) (w : Write) : Result Snapshot := do
   | Write.PutAlert a =>
     let v ← Alert.put s.alerts a
     ok { s with alerts := v }
+  | Write.PutText t => let v ← Text.put s.texts t
+                       ok { s with texts := v }
+  | Write.PutCurve c =>
+    let v ← Curve.put s.curves c
+    ok { s with curves := v }
   | Write.Emit _ => ok s
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Effect}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 146:9-146:14
+    Source: 'apps/lab/kernel/src/lib.rs', lines 181:9-181:14
     Visibility: public -/
 def Effect.Insts.CoreCloneClone.clone (self : Effect) : Result Effect := do
   ok self
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Meta}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 63:13-63:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 73:13-73:18
     Visibility: public -/
 def Meta.Insts.CoreCloneClone.clone (self : Meta) : Result Meta := do
   ok self
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Write}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 153:9-153:14
+    Source: 'apps/lab/kernel/src/lib.rs', lines 188:9-188:14
     Visibility: public -/
 def Write.Insts.CoreCloneClone.clone (self : Write) : Result Write := do
   match self with
@@ -2613,54 +3230,74 @@ def Write.Insts.CoreCloneClone.clone (self : Write) : Result Write := do
   | Write.PutAlert __self_0 =>
     let a ← Alert.Insts.CoreCloneClone.clone __self_0
     ok (Write.PutAlert a)
+  | Write.PutText __self_0 =>
+    let t ← Text.Insts.CoreCloneClone.clone __self_0
+    ok (Write.PutText t)
+  | Write.PutCurve __self_0 =>
+    let c ← Curve.Insts.CoreCloneClone.clone __self_0
+    ok (Write.PutCurve c)
   | Write.Emit __self_0 =>
     let e ← Effect.Insts.CoreCloneClone.clone __self_0
     ok (Write.Emit e)
 
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Trial}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 126:13-126:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 161:13-161:18 -/
 @[reducible]
 def Trial.Insts.CoreCloneClone : core.clone.Clone Trial := {
   clone := Trial.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Pending}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 115:13-115:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 149:13-149:18 -/
 @[reducible]
 def Pending.Insts.CoreCloneClone : core.clone.Clone Pending := {
   clone := Pending.Insts.CoreCloneClone.clone
 }
 
+/-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Curve}]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 143:13-143:18 -/
+@[reducible]
+def Curve.Insts.CoreCloneClone : core.clone.Clone Curve := {
+  clone := Curve.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Text}]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 132:13-132:18 -/
+@[reducible]
+def Text.Insts.CoreCloneClone : core.clone.Clone Text := {
+  clone := Text.Insts.CoreCloneClone.clone
+}
+
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Alert}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 108:13-108:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 121:13-121:18 -/
 @[reducible]
 def Alert.Insts.CoreCloneClone : core.clone.Clone Alert := {
   clone := Alert.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Comment}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 99:13-99:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 112:13-112:18 -/
 @[reducible]
 def Comment.Insts.CoreCloneClone : core.clone.Clone Comment := {
   clone := Comment.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Family}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 80:13-80:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 92:13-92:18 -/
 @[reducible]
 def Family.Insts.CoreCloneClone : core.clone.Clone Family := {
   clone := Family.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [lab_kernel::{impl core::clone::Clone for lab_kernel::Agent}]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 69:13-69:18 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 79:13-79:18 -/
 @[reducible]
 def Agent.Insts.CoreCloneClone : core.clone.Clone Agent := {
   clone := Agent.Insts.CoreCloneClone.clone
 }
 
 /-- [lab_kernel::{impl core::clone::Clone for lab_kernel::Snapshot}::clone]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 52:13-52:18
+    Source: 'apps/lab/kernel/src/lib.rs', lines 60:13-60:18
     Visibility: public -/
 def Snapshot.Insts.CoreCloneClone.clone
   (self : Snapshot) : Result Snapshot := do
@@ -2673,6 +3310,8 @@ def Snapshot.Insts.CoreCloneClone.clone
   let v4 ←
     alloc.vec.CloneVec.clone Comment.Insts.CoreCloneClone self.comments
   let v5 ← alloc.vec.CloneVec.clone Alert.Insts.CoreCloneClone self.alerts
+  let v6 ← alloc.vec.CloneVec.clone Text.Insts.CoreCloneClone self.texts
+  let v7 ← alloc.vec.CloneVec.clone Curve.Insts.CoreCloneClone self.curves
   ok
     {
       «meta» := m,
@@ -2681,7 +3320,9 @@ def Snapshot.Insts.CoreCloneClone.clone
       pendings := v2,
       trials := v3,
       comments := v4,
-      alerts := v5
+      alerts := v5,
+      texts := v6,
+      curves := v7
     }
 
 /-- [lab_kernel::apply]: loop body 0:
@@ -2723,7 +3364,7 @@ def apply (snap : Snapshot) (ws : alloc.vec.Vec Write) : Result Snapshot := do
   apply_loop ws s 0#usize
 
 /-- [lab_kernel::sql_write]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 904:0-915:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1098:0-1111:1 -/
 def sql_write
   (w : Write) (out : alloc.vec.Vec h5i_app_sql.Write) :
   Result (alloc.vec.Vec h5i_app_sql.Write)
@@ -2744,6 +3385,10 @@ def sql_write
     let w1 ← Comment.sql_put c
     alloc.vec.Vec.push out w1
   | Write.PutAlert a => let w1 ← Alert.sql_put a
+                        alloc.vec.Vec.push out w1
+  | Write.PutText t => let w1 ← Text.sql_put t
+                       alloc.vec.Vec.push out w1
+  | Write.PutCurve c => let w1 ← Curve.sql_put c
                         alloc.vec.Vec.push out w1
   | Write.Emit _ => ok out
 
@@ -2853,8 +3498,33 @@ def sql_writes
     Visibility: public -/
 @[global_simps, irreducible] def MARK_REJECT : Std.U64 := 1#u64
 
+/-- [lab_kernel::TEXT_HYPOTHESIS]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 42:0-42:35
+    Visibility: public -/
+@[global_simps, irreducible] def TEXT_HYPOTHESIS : Std.U64 := 1#u64
+
+/-- [lab_kernel::TEXT_METHOD]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 43:0-43:31
+    Visibility: public -/
+@[global_simps, irreducible] def TEXT_METHOD : Std.U64 := 2#u64
+
+/-- [lab_kernel::TEXT_CODE]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 44:0-44:29
+    Visibility: public -/
+@[global_simps, irreducible] def TEXT_CODE : Std.U64 := 3#u64
+
+/-- [lab_kernel::TEXT_PARAMS]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 45:0-45:31
+    Visibility: public -/
+@[global_simps, irreducible] def TEXT_PARAMS : Std.U64 := 4#u64
+
+/-- [lab_kernel::TEXT_AGENT]
+    Source: 'apps/lab/kernel/src/lib.rs', lines 46:0-46:30
+    Visibility: public -/
+@[global_simps, irreducible] def TEXT_AGENT : Std.U64 := 5#u64
+
 /-- [lab_kernel::Principal]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 42:0-47:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 50:0-55:1
     Visibility: public -/
 structure Principal where
   org : Std.U64
@@ -2863,13 +3533,25 @@ structure Principal where
   agent : Std.U64
 
 /-- [lab_kernel::Command]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 166:0-229:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 203:0-273:1
     Visibility: public -/
 @[discriminant isize]
 inductive Command where
-| Enroll : Std.U64 → Std.U64 → Std.U64 → Std.U64 → Command
-| PreRegister : Std.U64 → Std.U64 → Command
-| RequestTrial : Std.U64 → Std.U64 → Std.U64 → Std.U64 → Command
+| Enroll :
+  Std.U64 →
+  Std.U64 →
+  Std.U64 →
+  Std.U64 →
+  alloc.vec.Vec Std.U8 →
+  Command
+| PreRegister : alloc.vec.Vec Std.U8 → alloc.vec.Vec Std.U8 → Command
+| RequestTrial :
+  Std.U64 →
+  alloc.vec.Vec Std.U8 →
+  alloc.vec.Vec Std.U8 →
+  alloc.vec.Vec Std.U8 →
+  Std.U64 →
+  Command
 | RecordTrial :
   Std.U64 →
   Std.U64 →
@@ -2880,8 +3562,9 @@ inductive Command where
   Std.U64 →
   Std.U64 →
   Std.U64 →
+  alloc.vec.Vec Std.U8 →
   Command
-| Freeze : Std.U64 → Std.U64 → Std.U64 → Std.U64 → Command
+| Freeze : Std.U64 → Std.U64 → Command
 | SubmitHoldout : Std.U64 → Command
 | EvaluateHoldout : Std.U64 → Std.U64 → Command
 | Promote : Std.U64 → Command
@@ -2892,7 +3575,7 @@ inductive Command where
 | Fleet : Command
 
 /-- [lab_kernel::Reply]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 232:0-245:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 276:0-291:1
     Visibility: public -/
 @[discriminant isize]
 inductive Reply where
@@ -2903,10 +3586,12 @@ inductive Reply where
   alloc.vec.Vec Agent →
   alloc.vec.Vec Family →
   alloc.vec.Vec Trial →
+  alloc.vec.Vec Text →
+  alloc.vec.Vec Curve →
   Reply
 
 /-- [lab_kernel::Error]
-    Source: 'apps/lab/kernel/src/lib.rs', lines 248:0-255:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 294:0-301:1
     Visibility: public -/
 @[discriminant isize]
 inductive Error where
@@ -2918,29 +3603,30 @@ inductive Error where
 | Invalid : Error
 
 /-- [lab_kernel::one]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 259:0-263:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 305:0-309:1 -/
 def one (w : Write) : Result (alloc.vec.Vec Write) := do
   alloc.vec.Vec.push (alloc.vec.Vec.new Write) w
 
 /-- [lab_kernel::two]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 265:0-270:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 311:0-316:1 -/
 def two (a : Write) (b : Write) : Result (alloc.vec.Vec Write) := do
   let ws ← alloc.vec.Vec.push (alloc.vec.Vec.new Write) a
   alloc.vec.Vec.push ws b
 
-/-- [lab_kernel::four]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 272:0-279:1 -/
-def four
-  (a : Write) (b : Write) (c : Write) (d : Write) :
+/-- [lab_kernel::five]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 318:0-326:1 -/
+def five
+  (a : Write) (b : Write) (c : Write) (d : Write) (e : Write) :
   Result (alloc.vec.Vec Write)
   := do
   let ws ← alloc.vec.Vec.push (alloc.vec.Vec.new Write) a
   let ws1 ← alloc.vec.Vec.push ws b
   let ws2 ← alloc.vec.Vec.push ws1 c
-  alloc.vec.Vec.push ws2 d
+  let ws3 ← alloc.vec.Vec.push ws2 d
+  alloc.vec.Vec.push ws3 e
 
 /-- [lab_kernel::find_agent]: loop body 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 283:4-290:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 330:4-337:1
     Visibility: public -/
 @[rust_loop_body]
 def find_agent_loop.body
@@ -2959,7 +3645,7 @@ def find_agent_loop.body
   else ok (done none)
 
 /-- [lab_kernel::find_agent]: loop 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 283:4-290:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 330:4-337:1
     Visibility: public -/
 @[rust_loop]
 def find_agent_loop
@@ -2971,7 +3657,7 @@ def find_agent_loop
     i
 
 /-- [lab_kernel::find_agent]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 281:0-290:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 328:0-337:1
     Visibility: public -/
 @[reducible]
 def find_agent
@@ -2979,7 +3665,7 @@ def find_agent
   find_agent_loop v id 0#usize
 
 /-- [lab_kernel::find_family]: loop body 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 294:4-301:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 341:4-348:1
     Visibility: public -/
 @[rust_loop_body]
 def find_family_loop.body
@@ -2998,7 +3684,7 @@ def find_family_loop.body
   else ok (done none)
 
 /-- [lab_kernel::find_family]: loop 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 294:4-301:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 341:4-348:1
     Visibility: public -/
 @[rust_loop]
 def find_family_loop
@@ -3010,7 +3696,7 @@ def find_family_loop
     i
 
 /-- [lab_kernel::find_family]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 292:0-301:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 339:0-348:1
     Visibility: public -/
 @[reducible]
 def find_family
@@ -3018,7 +3704,7 @@ def find_family
   find_family_loop v id 0#usize
 
 /-- [lab_kernel::find_pending]: loop body 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 305:4-312:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 352:4-359:1
     Visibility: public -/
 @[rust_loop_body]
 def find_pending_loop.body
@@ -3037,7 +3723,7 @@ def find_pending_loop.body
   else ok (done none)
 
 /-- [lab_kernel::find_pending]: loop 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 305:4-312:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 352:4-359:1
     Visibility: public -/
 @[rust_loop]
 def find_pending_loop
@@ -3049,18 +3735,138 @@ def find_pending_loop
     i
 
 /-- [lab_kernel::find_pending]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 303:0-312:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 350:0-359:1
     Visibility: public -/
 @[reducible]
 def find_pending
   (v : alloc.vec.Vec Pending) (id : Std.U64) : Result (Option Pending) := do
   find_pending_loop v id 0#usize
 
+/-- [lab_kernel::find_trial]: loop body 0:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 363:4-370:1
+    Visibility: public -/
+@[rust_loop_body]
+def find_trial_loop.body
+  (v : alloc.vec.Vec Trial) (id : Std.U64) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize (Option Trial))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let t ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Trial) v i
+    if t.id = id
+    then ok (done (some t))
+    else let i2 ← i + 1#usize
+         ok (cont i2)
+  else ok (done none)
+
+/-- [lab_kernel::find_trial]: loop 0:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 363:4-370:1
+    Visibility: public -/
+@[rust_loop]
+def find_trial_loop
+  (v : alloc.vec.Vec Trial) (id : Std.U64) (i : Std.Usize) :
+  Result (Option Trial)
+  := do
+  loop
+    (fun i1 => find_trial_loop.body v id i1)
+    i
+
+/-- [lab_kernel::find_trial]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 361:0-370:1
+    Visibility: public -/
+@[reducible]
+def find_trial
+  (v : alloc.vec.Vec Trial) (id : Std.U64) : Result (Option Trial) := do
+  find_trial_loop v id 0#usize
+
+/-- [lab_kernel::find_text]: loop body 0:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-382:1
+    Visibility: public -/
+@[rust_loop_body]
+def find_text_loop.body
+  (v : alloc.vec.Vec Text) (kind : Std.U64) (body : alloc.vec.Vec Std.U8)
+  (i : Std.Usize) :
+  Result (ControlFlow Std.Usize (Option Std.U64))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let t ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Text) v i
+    if t.kind = kind
+    then
+      let b ←
+        alloc.vec.partial_eq.PartialEqVec.eq core.cmp.PartialEqU8 t.body body
+      if b
+      then ok (done (some t.id))
+      else let i2 ← i + 1#usize
+           ok (cont i2)
+    else let i2 ← i + 1#usize
+         ok (cont i2)
+  else ok (done none)
+
+/-- [lab_kernel::find_text]: loop 0:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-382:1
+    Visibility: public -/
+@[rust_loop]
+def find_text_loop
+  (v : alloc.vec.Vec Text) (kind : Std.U64) (body : alloc.vec.Vec Std.U8)
+  (i : Std.Usize) :
+  Result (Option Std.U64)
+  := do
+  loop
+    (fun i1 => find_text_loop.body v kind body i1)
+    i
+
+/-- [lab_kernel::find_text]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 373:0-382:1
+    Visibility: public -/
+@[reducible]
+def find_text
+  (v : alloc.vec.Vec Text) (kind : Std.U64) (body : alloc.vec.Vec Std.U8) :
+  Result (Option Std.U64)
+  := do
+  find_text_loop v kind body 0#usize
+
+/-- [lab_kernel::intern]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 388:0-411:1
+    Visibility: public -/
+def intern
+  (v : alloc.vec.Vec Text) (kind : Std.U64) («name» : alloc.vec.Vec Std.U8)
+  (body : alloc.vec.Vec Std.U8) (next : Std.U64) :
+  Result (core.result.Result (Std.U64 × (Option Text) × Std.U64) Error)
+  := do
+  let o ← find_text v kind body
+  match o with
+  | none =>
+    if next = core.num.U64.MAX
+    then ok (core.result.Result.Err Error.Overflow)
+    else
+      let v1 ← alloc.vec.CloneVec.clone core.clone.CloneU8 «name»
+      let v2 ← alloc.vec.CloneVec.clone core.clone.CloneU8 body
+      let i ← next + 1#u64
+      ok (core.result.Result.Ok (next, some
+        { id := next, kind, «name» := v1, body := v2 }, i))
+  | some id => ok (core.result.Result.Ok (id, none, next))
+
+/-- [lab_kernel::push_text]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 413:0-418:1 -/
+def push_text
+  (ws : alloc.vec.Vec Write) (row : Option Text) :
+  Result (alloc.vec.Vec Write)
+  := do
+  match row with
+  | none => ok ws
+  | some t => alloc.vec.Vec.push ws (Write.PutText t)
+
 /-- [lab_kernel::enroll]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 314:0-342:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 420:0-474:1 -/
 def enroll
   (actor : Principal) (s : Snapshot) (agent : Std.U64) (budget : Std.U64)
-  (token_budget : Std.U64) (sandbox : Std.U64) :
+  (token_budget : Std.U64) (sandbox : Std.U64)
+  («name» : alloc.vec.Vec Std.U8) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   if actor.role != ROLE_HUMAN
@@ -3077,6 +3883,58 @@ def enroll
           let o ← find_agent s.agents agent
           match o with
           | none =>
+            let i := alloc.vec.Vec.len «name»
+            if i = 0#usize
+            then
+              let v ←
+                one (Write.PutAgent
+                  {
+                    id := agent,
+                    budget,
+                    used := 0#u64,
+                    token_budget,
+                    tokens_used := 0#u64,
+                    fork_id := agent,
+                    sandbox,
+                    label := 0#u64
+                  })
+              ok (core.result.Result.Ok (v, Reply.Created agent))
+            else
+              let first ←
+                if s.meta.next_id = 0#u64
+                then ok 1#u64
+                else ok s.meta.next_id
+              let r ←
+                intern s.texts TEXT_AGENT (alloc.vec.Vec.new Std.U8) «name»
+                  first
+              match r with
+              | core.result.Result.Ok t =>
+                let (label, text, next) := t
+                let ws ← push_text (alloc.vec.Vec.new Write) text
+                let ws1 ←
+                  alloc.vec.Vec.push ws (Write.PutAgent
+                    {
+                      id := agent,
+                      budget,
+                      used := 0#u64,
+                      token_budget,
+                      tokens_used := 0#u64,
+                      fork_id := agent,
+                      sandbox,
+                      label
+                    })
+                let ws2 ←
+                  alloc.vec.Vec.push ws1 (Write.SetMeta { next_id := next })
+                ok (core.result.Result.Ok (ws2, Reply.Created agent))
+              | core.result.Result.Err e => ok (core.result.Result.Err e)
+          | some _ => ok (core.result.Result.Err Error.Conflict)
+      else
+        let o ← find_agent s.agents agent
+        match o with
+        | none =>
+          let i := alloc.vec.Vec.len «name»
+          if i = 0#usize
+          then
             let v ←
               one (Write.PutAgent
                 {
@@ -3086,33 +3944,45 @@ def enroll
                   token_budget,
                   tokens_used := 0#u64,
                   fork_id := agent,
-                  sandbox
+                  sandbox,
+                  label := 0#u64
                 })
             ok (core.result.Result.Ok (v, Reply.Created agent))
-          | some _ => ok (core.result.Result.Err Error.Conflict)
-      else
-        let o ← find_agent s.agents agent
-        match o with
-        | none =>
-          let v ←
-            one (Write.PutAgent
-              {
-                id := agent,
-                budget,
-                used := 0#u64,
-                token_budget,
-                tokens_used := 0#u64,
-                fork_id := agent,
-                sandbox
-              })
-          ok (core.result.Result.Ok (v, Reply.Created agent))
+          else
+            let first ←
+              if s.meta.next_id = 0#u64
+              then ok 1#u64
+              else ok s.meta.next_id
+            let r ←
+              intern s.texts TEXT_AGENT (alloc.vec.Vec.new Std.U8) «name»
+                first
+            match r with
+            | core.result.Result.Ok t =>
+              let (label, text, next) := t
+              let ws ← push_text (alloc.vec.Vec.new Write) text
+              let ws1 ←
+                alloc.vec.Vec.push ws (Write.PutAgent
+                  {
+                    id := agent,
+                    budget,
+                    used := 0#u64,
+                    token_budget,
+                    tokens_used := 0#u64,
+                    fork_id := agent,
+                    sandbox,
+                    label
+                  })
+              let ws2 ←
+                alloc.vec.Vec.push ws1 (Write.SetMeta { next_id := next })
+              ok (core.result.Result.Ok (ws2, Reply.Created agent))
+            | core.result.Result.Err e => ok (core.result.Result.Err e)
         | some _ => ok (core.result.Result.Err Error.Conflict)
 
 /-- [lab_kernel::pre_register]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 344:0-377:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 476:0-527:1 -/
 def pre_register
-  (actor : Principal) (s : Snapshot) (hypothesis : Std.U64) (method : Std.U64)
-  :
+  (actor : Principal) (s : Snapshot) (hypothesis : alloc.vec.Vec Std.U8)
+  (method : alloc.vec.Vec Std.U8) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   if actor.role != ROLE_AGENT
@@ -3121,50 +3991,120 @@ def pre_register
     if actor.agent = 0#u64
     then ok (core.result.Result.Err Error.Invalid)
     else
-      if hypothesis = 0#u64
+      let i := alloc.vec.Vec.len hypothesis
+      if i = 0#usize
       then ok (core.result.Result.Err Error.Invalid)
       else
-        if method = 0#u64
+        let i1 := alloc.vec.Vec.len method
+        if i1 = 0#usize
         then ok (core.result.Result.Err Error.Invalid)
         else
           let o ← find_agent s.agents actor.agent
           match o with
           | none => ok (core.result.Result.Err Error.NotFound)
           | some _ =>
-            if s.meta.next_id = core.num.U64.MAX
-            then ok (core.result.Result.Err Error.Overflow)
-            else
-              let i ← s.meta.next_id + 1#u64
-              let v ←
-                two (Write.PutFamily
-                  {
-                    id := s.meta.next_id,
-                    agent := actor.agent,
-                    task := s.meta.next_id,
-                    hypothesis,
-                    method,
-                    trials := 0#u64,
-                    corrected := 0#u64,
-                    frozen_code := 0#u64,
-                    frozen_params := 0#u64,
-                    frozen_data := 0#u64,
-                    holdout := HOLDOUT_NONE,
-                    promoted := 0#u64,
-                    rejected := 0#u64
-                  }) (Write.SetMeta { next_id := i })
-              ok (core.result.Result.Ok (v, Reply.Created s.meta.next_id))
+            let r ←
+              intern s.texts TEXT_HYPOTHESIS (alloc.vec.Vec.new Std.U8)
+                hypothesis s.meta.next_id
+            match r with
+            | core.result.Result.Ok found =>
+              let (hypothesis1, h_text, next) := found
+              let r1 ←
+                intern s.texts TEXT_METHOD (alloc.vec.Vec.new Std.U8) method
+                  next
+              match r1 with
+              | core.result.Result.Ok found1 =>
+                let (method1, m_text, next1) := found1
+                if next1 = core.num.U64.MAX
+                then ok (core.result.Result.Err Error.Overflow)
+                else
+                  let i2 ← next1 + 1#u64
+                  let ws ← push_text (alloc.vec.Vec.new Write) h_text
+                  let ws1 ← push_text ws m_text
+                  let ws2 ←
+                    alloc.vec.Vec.push ws1 (Write.PutFamily
+                      {
+                        id := next1,
+                        agent := actor.agent,
+                        task := next1,
+                        hypothesis := hypothesis1,
+                        method := method1,
+                        trials := 0#u64,
+                        corrected := 0#u64,
+                        frozen_code := 0#u64,
+                        frozen_params := 0#u64,
+                        frozen_data := 0#u64,
+                        holdout := HOLDOUT_NONE,
+                        promoted := 0#u64,
+                        rejected := 0#u64
+                      })
+                  let ws3 ←
+                    alloc.vec.Vec.push ws2 (Write.SetMeta { next_id := i2 })
+                  ok (core.result.Result.Ok (ws3, Reply.Created next1))
+              | core.result.Result.Err e => ok (core.result.Result.Err e)
+            | core.result.Result.Err e => ok (core.result.Result.Err e)
+
+/-- [lab_kernel::request_new]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 566:0-621:1 -/
+def request_new
+  (actor : Principal) (s : Snapshot) (family : Std.U64) (a : Agent)
+  («name» : alloc.vec.Vec Std.U8) (code : alloc.vec.Vec Std.U8)
+  (params : alloc.vec.Vec Std.U8) (decision_time : Std.U64) :
+  Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
+  := do
+  let r ← intern s.texts TEXT_CODE «name» code s.meta.next_id
+  match r with
+  | core.result.Result.Ok found =>
+    let (code1, c_text, next) := found
+    let r1 ←
+      intern s.texts TEXT_PARAMS (alloc.vec.Vec.new Std.U8) params next
+    match r1 with
+    | core.result.Result.Ok found1 =>
+      let (params1, p_text, next1) := found1
+      if code1 = 0#u64
+      then ok (core.result.Result.Err Error.Invalid)
+      else
+        if next1 = core.num.U64.MAX
+        then ok (core.result.Result.Err Error.Overflow)
+        else
+          let i ← a.used + 1#u64
+          let i1 ← next1 + 1#u64
+          let ws ← push_text (alloc.vec.Vec.new Write) c_text
+          let ws1 ← push_text ws p_text
+          let ws2 ←
+            alloc.vec.Vec.push ws1 (Write.PutPending
+              {
+                id := next1,
+                family,
+                agent := actor.agent,
+                code := code1,
+                params := params1,
+                decision_time,
+                «open» := 1#u64
+              })
+          let ws3 ←
+            alloc.vec.Vec.push ws2 (Write.PutAgent { a with used := i })
+          let ws4 ← alloc.vec.Vec.push ws3 (Write.SetMeta { next_id := i1 })
+          let ws5 ←
+            alloc.vec.Vec.push ws4 (Write.Emit
+              { dest := DEST_DB, kind := EFFECT_TRIAL, id := next1 })
+          ok (core.result.Result.Ok (ws5, Reply.Created next1))
+    | core.result.Result.Err e => ok (core.result.Result.Err e)
+  | core.result.Result.Err e => ok (core.result.Result.Err e)
 
 /-- [lab_kernel::request_trial]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 379:0-443:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 529:0-563:1 -/
 def request_trial
-  (actor : Principal) (s : Snapshot) (family : Std.U64) (code : Std.U64)
-  (params : Std.U64) (decision_time : Std.U64) :
+  (actor : Principal) (s : Snapshot) (family : Std.U64)
+  («name» : alloc.vec.Vec Std.U8) (code : alloc.vec.Vec Std.U8)
+  (params : alloc.vec.Vec Std.U8) (decision_time : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   if actor.role != ROLE_AGENT
   then ok (core.result.Result.Err Error.Forbidden)
   else
-    if code = 0#u64
+    let i := alloc.vec.Vec.len code
+    if i = 0#usize
     then ok (core.result.Result.Err Error.Invalid)
     else
       let o ← find_family s.families family
@@ -3181,37 +4121,15 @@ def request_trial
             if a.used >= a.budget
             then ok (core.result.Result.Err Error.Budget)
             else
-              if s.meta.next_id = core.num.U64.MAX
-              then ok (core.result.Result.Err Error.Overflow)
-              else
-                let i ← a.used + 1#u64
-                let i1 ← s.meta.next_id + 1#u64
-                let v ←
-                  four (Write.PutPending
-                    {
-                      id := s.meta.next_id,
-                      family,
-                      agent := actor.agent,
-                      code,
-                      params,
-                      decision_time,
-                      «open» := 1#u64
-                    }) (Write.PutAgent { a with used := i }) (Write.SetMeta
-                    { next_id := i1 }) (Write.Emit
-                    {
-                      dest := DEST_DB,
-                      kind := EFFECT_TRIAL,
-                      id := s.meta.next_id
-                    })
-                ok (core.result.Result.Ok (v, Reply.Created s.meta.next_id))
+              request_new actor s family a «name» code params decision_time
 
 /-- [lab_kernel::record_trial]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 445:0-543:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 623:0-725:1 -/
 def record_trial
   (actor : Principal) (s : Snapshot) (pending : Std.U64)
   (data_version : Std.U64) (score : Std.U64) (corrected : Std.U64)
   (sharpe : Std.U64) (skew : Std.U64) (kurt : Std.U64) (samples : Std.U64)
-  (tokens : Std.U64) :
+  (tokens : Std.U64) (curve : alloc.vec.Vec Std.U8) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   if actor.role != ROLE_WORKER
@@ -3244,8 +4162,9 @@ def record_trial
                 then ok (core.result.Result.Err Error.Overflow)
                 else
                   let i2 ← f.trials + 1#u64
-                  let v ←
-                    four (Write.PutPending { p with «open» := 0#u64 })
+                  let v ← alloc.vec.CloneVec.clone core.clone.CloneU8 curve
+                  let v1 ←
+                    five (Write.PutPending { p with «open» := 0#u64 })
                       (Write.PutTrial
                       {
                         id := p.id,
@@ -3263,50 +4182,64 @@ def record_trial
                         tokens
                       }) (Write.PutFamily { f with trials := i2, corrected })
                       (Write.PutAgent { a with tokens_used := i1 })
-                  ok (core.result.Result.Ok (v, Reply.Ack))
+                      (Write.PutCurve { id := p.id, body := v })
+                  ok (core.result.Result.Ok (v1, Reply.Ack))
+
+/-- [lab_kernel::freeze_trial]:
+    Source: 'apps/lab/kernel/src/lib.rs', lines 750:0-776:1 -/
+def freeze_trial
+  (f : Family) (t : Trial) :
+  Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
+  := do
+  if t.family != f.id
+  then ok (core.result.Result.Err Error.Invalid)
+  else
+    if t.code = 0#u64
+    then ok (core.result.Result.Err Error.Invalid)
+    else
+      if t.params = 0#u64
+      then ok (core.result.Result.Err Error.Invalid)
+      else
+        if t.data_version = 0#u64
+        then ok (core.result.Result.Err Error.Invalid)
+        else
+          let v ←
+            one (Write.PutFamily
+              {
+                f
+                  with
+                  frozen_code := t.code,
+                  frozen_params := t.params,
+                  frozen_data := t.data_version
+              })
+          ok (core.result.Result.Ok (v, Reply.Ack))
 
 /-- [lab_kernel::freeze]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 545:0-586:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 729:0-748:1 -/
 def freeze
-  (actor : Principal) (s : Snapshot) (family : Std.U64) (code : Std.U64)
-  (params : Std.U64) (data_version : Std.U64) :
+  (actor : Principal) (s : Snapshot) (family : Std.U64) (trial : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   if actor.role != ROLE_AGENT
   then ok (core.result.Result.Err Error.Forbidden)
   else
-    if code = 0#u64
-    then ok (core.result.Result.Err Error.Invalid)
-    else
-      if params = 0#u64
-      then ok (core.result.Result.Err Error.Invalid)
+    let o ← find_family s.families family
+    match o with
+    | none => ok (core.result.Result.Err Error.NotFound)
+    | some f =>
+      if f.agent != actor.agent
+      then ok (core.result.Result.Err Error.Forbidden)
       else
-        if data_version = 0#u64
-        then ok (core.result.Result.Err Error.Invalid)
+        if f.frozen_code != 0#u64
+        then ok (core.result.Result.Err Error.Conflict)
         else
-          let o ← find_family s.families family
-          match o with
+          let o1 ← find_trial s.trials trial
+          match o1 with
           | none => ok (core.result.Result.Err Error.NotFound)
-          | some f =>
-            if f.agent != actor.agent
-            then ok (core.result.Result.Err Error.Forbidden)
-            else
-              if f.frozen_code != 0#u64
-              then ok (core.result.Result.Err Error.Conflict)
-              else
-                let v ←
-                  one (Write.PutFamily
-                    {
-                      f
-                        with
-                        frozen_code := code,
-                        frozen_params := params,
-                        frozen_data := data_version
-                    })
-                ok (core.result.Result.Ok (v, Reply.Ack))
+          | some t => freeze_trial f t
 
 /-- [lab_kernel::submit_holdout]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 588:0-620:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 778:0-810:1 -/
 def submit_holdout
   (actor : Principal) (s : Snapshot) (family : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
@@ -3334,7 +4267,7 @@ def submit_holdout
             ok (core.result.Result.Ok (v, Reply.Ack))
 
 /-- [lab_kernel::evaluate_holdout]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 622:0-654:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 812:0-844:1 -/
 def evaluate_holdout
   (actor : Principal) (s : Snapshot) (family : Std.U64) (passed : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
@@ -3368,7 +4301,7 @@ def evaluate_holdout
           ok (core.result.Result.Ok (v, Reply.Ack))
 
 /-- [lab_kernel::three]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 656:0-662:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 846:0-852:1 -/
 def three
   (a : Write) (b : Write) (c : Write) : Result (alloc.vec.Vec Write) := do
   let ws ← alloc.vec.Vec.push (alloc.vec.Vec.new Write) a
@@ -3376,7 +4309,7 @@ def three
   alloc.vec.Vec.push ws1 c
 
 /-- [lab_kernel::alert_exists]: loop body 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-673:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-863:1 -/
 @[rust_loop_body]
 def alert_exists_loop.body
   (v : alloc.vec.Vec Alert) (kind : alloc.vec.Vec Std.U8)
@@ -3404,7 +4337,7 @@ def alert_exists_loop.body
   else ok (done false)
 
 /-- [lab_kernel::alert_exists]: loop 0:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-673:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1:0-863:1 -/
 @[rust_loop]
 def alert_exists_loop
   (v : alloc.vec.Vec Alert) (kind : alloc.vec.Vec Std.U8)
@@ -3416,7 +4349,7 @@ def alert_exists_loop
     i
 
 /-- [lab_kernel::alert_exists]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 664:0-673:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 854:0-863:1 -/
 @[reducible]
 def alert_exists
   (v : alloc.vec.Vec Alert) (kind : alloc.vec.Vec Std.U8)
@@ -3426,7 +4359,7 @@ def alert_exists
   alert_exists_loop v kind detail 0#usize
 
 /-- [lab_kernel::reject]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 676:0-721:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 866:0-911:1 -/
 def reject
   (actor : Principal) (s : Snapshot) (family : Std.U64)
   (text : alloc.vec.Vec Std.U8) :
@@ -3459,7 +4392,7 @@ def reject
             ok (core.result.Result.Ok (v1, Reply.Ack))
 
 /-- [lab_kernel::comment]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 724:0-749:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 914:0-939:1 -/
 def comment
   (actor : Principal) (s : Snapshot) (family : Std.U64)
   (text : alloc.vec.Vec Std.U8) :
@@ -3488,7 +4421,7 @@ def comment
           ok (core.result.Result.Ok (v1, Reply.Created s.meta.next_id))
 
 /-- [lab_kernel::note_alert]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 752:0-773:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 942:0-963:1 -/
 def note_alert
   (actor : Principal) (s : Snapshot) (kind : alloc.vec.Vec Std.U8)
   (detail : alloc.vec.Vec Std.U8) :
@@ -3540,7 +4473,7 @@ def note_alert
           ok (core.result.Result.Ok (v2, Reply.Created s.meta.next_id))
 
 /-- [lab_kernel::promote]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 775:0-809:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 965:0-999:1 -/
 def promote
   (actor : Principal) (s : Snapshot) (family : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
@@ -3567,7 +4500,7 @@ def promote
             ok (core.result.Result.Ok (v, Reply.Ack))
 
 /-- [lab_kernel::report]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 811:0-828:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1001:0-1018:1 -/
 def report
   (actor : Principal) (s : Snapshot) (family : Std.U64) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
@@ -3588,7 +4521,7 @@ def report
         f.trials f.corrected))
 
 /-- [lab_kernel::fleet]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 830:0-842:1 -/
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1020:0-1034:1 -/
 def fleet
   (actor : Principal) (s : Snapshot) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
@@ -3599,28 +4532,30 @@ def fleet
     let v ← alloc.vec.CloneVec.clone Agent.Insts.CoreCloneClone s.agents
     let v1 ← alloc.vec.CloneVec.clone Family.Insts.CoreCloneClone s.families
     let v2 ← alloc.vec.CloneVec.clone Trial.Insts.CoreCloneClone s.trials
-    ok (core.result.Result.Ok (alloc.vec.Vec.new Write, Reply.Fleet v v1 v2))
+    let v3 ← alloc.vec.CloneVec.clone Text.Insts.CoreCloneClone s.texts
+    let v4 ← alloc.vec.CloneVec.clone Curve.Insts.CoreCloneClone s.curves
+    ok (core.result.Result.Ok (alloc.vec.Vec.new Write, Reply.Fleet v v1 v2 v3
+      v4))
 
 /-- [lab_kernel::transition]:
-    Source: 'apps/lab/kernel/src/lib.rs', lines 845:0-889:1
+    Source: 'apps/lab/kernel/src/lib.rs', lines 1037:0-1081:1
     Visibility: public -/
 def transition
   (actor : Principal) (s : Snapshot) (cmd : Command) :
   Result (core.result.Result ((alloc.vec.Vec Write) × Reply) Error)
   := do
   match cmd with
-  | Command.Enroll agent budget token_budget sandbox =>
-    enroll actor s agent budget token_budget sandbox
+  | Command.Enroll agent budget token_budget sandbox «name» =>
+    enroll actor s agent budget token_budget sandbox «name»
   | Command.PreRegister hypothesis method =>
     pre_register actor s hypothesis method
-  | Command.RequestTrial family code params decision_time =>
-    request_trial actor s family code params decision_time
+  | Command.RequestTrial family «name» code params decision_time =>
+    request_trial actor s family «name» code params decision_time
   | Command.RecordTrial pending data_version score corrected sharpe skew kurt
-    samples tokens =>
+    samples tokens curve =>
     record_trial actor s pending data_version score corrected sharpe skew kurt
-      samples tokens
-  | Command.Freeze family code params data_version =>
-    freeze actor s family code params data_version
+      samples tokens curve
+  | Command.Freeze family trial => freeze actor s family trial
   | Command.SubmitHoldout family => submit_holdout actor s family
   | Command.EvaluateHoldout family passed =>
     evaluate_holdout actor s family passed

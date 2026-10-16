@@ -37,6 +37,14 @@ pub const MARK_NOTE: u64 = 0;
 /// The comment written by the rejection itself.
 pub const MARK_REJECT: u64 = 1;
 
+/// What a [`Text`] row holds. Family, pending, trial, and agent rows name
+/// texts by id.
+pub const TEXT_HYPOTHESIS: u64 = 1;
+pub const TEXT_METHOD: u64 = 2;
+pub const TEXT_CODE: u64 = 3;
+pub const TEXT_PARAMS: u64 = 4;
+pub const TEXT_AGENT: u64 = 5;
+
 /// Who is calling. `agent` is the agent id when `role` is [`ROLE_AGENT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Principal {
@@ -58,6 +66,8 @@ h5i_app_schema::schema! {
         trials: Vec<Trial>,
         comments: Vec<Comment>,
         alerts: Vec<Alert>,
+        texts: Vec<Text>,
+        curves: Vec<Curve>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -75,6 +85,8 @@ h5i_app_schema::schema! {
         tokens_used: u64,
         fork_id: u64,
         sandbox: u64,
+        /// Text id of the agent's name ([`TEXT_AGENT`]), or 0 for none.
+        label: u64,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +94,7 @@ h5i_app_schema::schema! {
         key { id: u64 }
         agent: u64,
         task: u64,
+        /// Text ids ([`TEXT_HYPOTHESIS`], [`TEXT_METHOD`]).
         hypothesis: u64,
         method: u64,
         trials: u64,
@@ -112,11 +125,33 @@ h5i_app_schema::schema! {
         detail: Vec<u8>,
     }
 
+    /// Text an id stands for: a hypothesis, a method, strategy code (with a
+    /// short name), parameters, or an agent's name. One row per kind and
+    /// body. No command rewrites a row: a second submission of the same body
+    /// gets the first row's id.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Text in "texts" {
+        key { id: u64 }
+        kind: u64,
+        name: Vec<u8>,
+        body: Vec<u8>,
+    }
+
+    /// What the worker measured for one trial (its key is the trial id), in
+    /// the worker's encoding. Written with the trial and never changed. The
+    /// kernel does not interpret it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Curve in "curves" {
+        key { id: u64 }
+        body: Vec<u8>,
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct Pending in "pendings" {
         key { id: u64 }
         family: u64,
         agent: u64,
+        /// Text ids ([`TEXT_CODE`], [`TEXT_PARAMS`]).
         code: u64,
         params: u64,
         decision_time: u64,
@@ -159,6 +194,8 @@ pub enum Write {
     PutTrial(Trial),
     PutComment(Comment),
     PutAlert(Alert),
+    PutText(Text),
+    PutCurve(Curve),
     Emit(Effect),
 }
 
@@ -169,15 +206,20 @@ pub enum Command {
         budget: u64,
         token_budget: u64,
         sandbox: u64,
+        /// The agent's name. Empty for none.
+        name: Vec<u8>,
     },
+    /// The hypothesis and the method name, as text.
     PreRegister {
-        hypothesis: u64,
-        method: u64,
+        hypothesis: Vec<u8>,
+        method: Vec<u8>,
     },
+    /// Strategy code with a short name, and its parameters, as text.
     RequestTrial {
         family: u64,
-        code: u64,
-        params: u64,
+        name: Vec<u8>,
+        code: Vec<u8>,
+        params: Vec<u8>,
         decision_time: u64,
     },
     RecordTrial {
@@ -190,12 +232,14 @@ pub enum Command {
         kurt: u64,
         samples: u64,
         tokens: u64,
+        /// The worker's measurements of this trial, stored as a [`Curve`].
+        curve: Vec<u8>,
     },
+    /// Freeze the code, parameters, and data version of a counted trial of
+    /// this family.
     Freeze {
         family: u64,
-        code: u64,
-        params: u64,
-        data_version: u64,
+        trial: u64,
     },
     SubmitHoldout {
         family: u64,
@@ -241,6 +285,8 @@ pub enum Reply {
         agents: Vec<Agent>,
         families: Vec<Family>,
         trials: Vec<Trial>,
+        texts: Vec<Text>,
+        curves: Vec<Curve>,
     },
 }
 
@@ -269,12 +315,13 @@ fn two(a: Write, b: Write) -> Vec<Write> {
     ws
 }
 
-fn four(a: Write, b: Write, c: Write, d: Write) -> Vec<Write> {
+fn five(a: Write, b: Write, c: Write, d: Write, e: Write) -> Vec<Write> {
     let mut ws = Vec::new();
     ws.push(a);
     ws.push(b);
     ws.push(c);
     ws.push(d);
+    ws.push(e);
     ws
 }
 
@@ -311,6 +358,65 @@ pub fn find_pending(v: &Vec<Pending>, id: u64) -> Option<Pending> {
     None
 }
 
+pub fn find_trial(v: &Vec<Trial>, id: u64) -> Option<Trial> {
+    let mut i = 0;
+    while i < v.len() {
+        if v[i].id == id {
+            return Some(v[i]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Id of the stored text with this kind and body, if there is one.
+pub fn find_text(v: &Vec<Text>, kind: u64, body: &Vec<u8>) -> Option<u64> {
+    let mut i = 0;
+    while i < v.len() {
+        if v[i].kind == kind && v[i].body == *body {
+            return Some(v[i].id);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The id of a text with this kind and body, and the next free id.
+///
+/// An existing row is reused and nothing is written. Otherwise the text gets
+/// id `next` and the row to write comes back with it.
+pub fn intern(
+    v: &Vec<Text>,
+    kind: u64,
+    name: &Vec<u8>,
+    body: &Vec<u8>,
+    next: u64,
+) -> Result<(u64, Option<Text>, u64), Error> {
+    match find_text(v, kind, body) {
+        Some(id) => Ok((id, None, next)),
+        None => {
+            if next == u64::MAX {
+                Err(Error::Overflow)
+            } else {
+                let row = Text {
+                    id: next,
+                    kind,
+                    name: name.clone(),
+                    body: body.clone(),
+                };
+                Ok((next, Some(row), next + 1))
+            }
+        }
+    }
+}
+
+fn push_text(ws: &mut Vec<Write>, row: Option<Text>) {
+    match row {
+        Some(t) => ws.push(Write::PutText(t)),
+        None => {}
+    }
+}
+
 fn enroll(
     actor: &Principal,
     s: &Snapshot,
@@ -318,6 +424,7 @@ fn enroll(
     budget: u64,
     token_budget: u64,
     sandbox: u64,
+    name: &Vec<u8>,
 ) -> Outcome {
     if actor.role != ROLE_HUMAN {
         return Err(Error::Forbidden);
@@ -329,34 +436,72 @@ fn enroll(
         Some(_) => return Err(Error::Conflict),
         None => {}
     }
-    let row = Agent {
-        id: agent,
-        budget,
-        used: 0,
-        token_budget,
-        tokens_used: 0,
-        fork_id: agent,
-        sandbox,
-    };
-    Ok((one(Write::PutAgent(row)), Reply::Created(agent)))
+    if name.len() == 0 {
+        let row = Agent {
+            id: agent,
+            budget,
+            used: 0,
+            token_budget,
+            tokens_used: 0,
+            fork_id: agent,
+            sandbox,
+            label: 0,
+        };
+        return Ok((one(Write::PutAgent(row)), Reply::Created(agent)));
+    }
+    // Label 0 means no name, so a name never gets id 0.
+    let first = if s.meta.next_id == 0 { 1 } else { s.meta.next_id };
+    match intern(&s.texts, TEXT_AGENT, &Vec::new(), name, first) {
+        Err(e) => Err(e),
+        Ok((label, text, next)) => {
+            let row = Agent {
+                id: agent,
+                budget,
+                used: 0,
+                token_budget,
+                tokens_used: 0,
+                fork_id: agent,
+                sandbox,
+                label,
+            };
+            let mut ws = Vec::new();
+            push_text(&mut ws, text);
+            ws.push(Write::PutAgent(row));
+            ws.push(Write::SetMeta(Meta { next_id: next }));
+            Ok((ws, Reply::Created(agent)))
+        }
+    }
 }
 
-fn pre_register(actor: &Principal, s: &Snapshot, hypothesis: u64, method: u64) -> Outcome {
+fn pre_register(
+    actor: &Principal,
+    s: &Snapshot,
+    hypothesis: &Vec<u8>,
+    method: &Vec<u8>,
+) -> Outcome {
     if actor.role != ROLE_AGENT {
         return Err(Error::Forbidden);
     }
-    if actor.agent == 0 || hypothesis == 0 || method == 0 {
+    if actor.agent == 0 || hypothesis.len() == 0 || method.len() == 0 {
         return Err(Error::Invalid);
     }
     match find_agent(&s.agents, actor.agent) {
         None => return Err(Error::NotFound),
         Some(_) => {}
     }
-    let m = s.meta;
-    if m.next_id == u64::MAX {
+    let (hypothesis, h_text, next) =
+        match intern(&s.texts, TEXT_HYPOTHESIS, &Vec::new(), hypothesis, s.meta.next_id) {
+            Err(e) => return Err(e),
+            Ok(found) => found,
+        };
+    let (method, m_text, next) = match intern(&s.texts, TEXT_METHOD, &Vec::new(), method, next) {
+        Err(e) => return Err(e),
+        Ok(found) => found,
+    };
+    if next == u64::MAX {
         return Err(Error::Overflow);
     }
-    let id = m.next_id;
+    let id = next;
     let family = Family {
         id,
         agent: actor.agent,
@@ -372,22 +517,28 @@ fn pre_register(actor: &Principal, s: &Snapshot, hypothesis: u64, method: u64) -
         promoted: 0,
         rejected: 0,
     };
-    let meta = Meta { next_id: m.next_id + 1 };
-    Ok((two(Write::PutFamily(family), Write::SetMeta(meta)), Reply::Created(id)))
+    let meta = Meta { next_id: id + 1 };
+    let mut ws = Vec::new();
+    push_text(&mut ws, h_text);
+    push_text(&mut ws, m_text);
+    ws.push(Write::PutFamily(family));
+    ws.push(Write::SetMeta(meta));
+    Ok((ws, Reply::Created(id)))
 }
 
 fn request_trial(
     actor: &Principal,
     s: &Snapshot,
     family: u64,
-    code: u64,
-    params: u64,
+    name: &Vec<u8>,
+    code: &Vec<u8>,
+    params: &Vec<u8>,
     decision_time: u64,
 ) -> Outcome {
     if actor.role != ROLE_AGENT {
         return Err(Error::Forbidden);
     }
-    if code == 0 {
+    if code.len() == 0 {
         return Err(Error::Invalid);
     }
     match find_family(&s.families, family) {
@@ -401,45 +552,72 @@ fn request_trial(
                     Some(a) => {
                         if a.used >= a.budget {
                             Err(Error::Budget)
-                        } else if s.meta.next_id == u64::MAX {
-                            Err(Error::Overflow)
                         } else {
-                            let id = s.meta.next_id;
-                            let pending = Pending {
-                                id,
-                                family,
-                                agent: actor.agent,
-                                code,
-                                params,
-                                decision_time,
-                                open: 1,
-                            };
-                            let agent = Agent {
-                                id: a.id,
-                                budget: a.budget,
-                                used: a.used + 1,
-                                token_budget: a.token_budget,
-                                tokens_used: a.tokens_used,
-                                fork_id: a.fork_id,
-                                sandbox: a.sandbox,
-                            };
-                            let meta = Meta { next_id: id + 1 };
-                            let effect = Effect { dest: DEST_DB, kind: EFFECT_TRIAL, id };
-                            Ok((
-                                four(
-                                    Write::PutPending(pending),
-                                    Write::PutAgent(agent),
-                                    Write::SetMeta(meta),
-                                    Write::Emit(effect),
-                                ),
-                                Reply::Created(id),
-                            ))
+                            request_new(actor, s, family, a, name, code, params, decision_time)
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// The pending row for a request that passed the role, owner, and budget checks.
+fn request_new(
+    actor: &Principal,
+    s: &Snapshot,
+    family: u64,
+    a: Agent,
+    name: &Vec<u8>,
+    code: &Vec<u8>,
+    params: &Vec<u8>,
+    decision_time: u64,
+) -> Outcome {
+    let (code, c_text, next) = match intern(&s.texts, TEXT_CODE, name, code, s.meta.next_id) {
+        Err(e) => return Err(e),
+        Ok(found) => found,
+    };
+    let (params, p_text, next) = match intern(&s.texts, TEXT_PARAMS, &Vec::new(), params, next) {
+        Err(e) => return Err(e),
+        Ok(found) => found,
+    };
+    // Id 0 is never a code: a frozen family is one whose frozen code is not 0.
+    if code == 0 {
+        return Err(Error::Invalid);
+    }
+    if next == u64::MAX {
+        return Err(Error::Overflow);
+    }
+    let id = next;
+    let pending = Pending {
+        id,
+        family,
+        agent: actor.agent,
+        code,
+        params,
+        decision_time,
+        open: 1,
+    };
+    let agent = Agent {
+        id: a.id,
+        budget: a.budget,
+        used: a.used + 1,
+        token_budget: a.token_budget,
+        tokens_used: a.tokens_used,
+        fork_id: a.fork_id,
+        sandbox: a.sandbox,
+        label: a.label,
+    };
+    let meta = Meta { next_id: id + 1 };
+    let effect = Effect { dest: DEST_DB, kind: EFFECT_TRIAL, id };
+    let mut ws = Vec::new();
+    push_text(&mut ws, c_text);
+    push_text(&mut ws, p_text);
+    ws.push(Write::PutPending(pending));
+    ws.push(Write::PutAgent(agent));
+    ws.push(Write::SetMeta(meta));
+    ws.push(Write::Emit(effect));
+    Ok((ws, Reply::Created(id)))
 }
 
 fn record_trial(
@@ -454,6 +632,7 @@ fn record_trial(
     kurt: u64,
     samples: u64,
     tokens: u64,
+    curve: &Vec<u8>,
 ) -> Outcome {
     if actor.role != ROLE_WORKER {
         return Err(Error::Forbidden);
@@ -523,13 +702,16 @@ fn record_trial(
                                     tokens_used: a.tokens_used + tokens,
                                     fork_id: a.fork_id,
                                     sandbox: a.sandbox,
+                                    label: a.label,
                                 };
+                                let measured = Curve { id: p.id, body: curve.clone() };
                                 Ok((
-                                    four(
+                                    five(
                                         Write::PutPending(closed),
                                         Write::PutTrial(trial),
                                         Write::PutFamily(family),
                                         Write::PutAgent(agent),
+                                        Write::PutCurve(measured),
                                     ),
                                     Reply::Ack,
                                 ))
@@ -542,19 +724,11 @@ fn record_trial(
     }
 }
 
-fn freeze(
-    actor: &Principal,
-    s: &Snapshot,
-    family: u64,
-    code: u64,
-    params: u64,
-    data_version: u64,
-) -> Outcome {
+/// Agent only, on its own family, once. What is frozen is a trial the family
+/// already counted: its code, parameters, and data version.
+fn freeze(actor: &Principal, s: &Snapshot, family: u64, trial: u64) -> Outcome {
     if actor.role != ROLE_AGENT {
         return Err(Error::Forbidden);
-    }
-    if code == 0 || params == 0 || data_version == 0 {
-        return Err(Error::Invalid);
     }
     match find_family(&s.families, family) {
         None => Err(Error::NotFound),
@@ -564,25 +738,41 @@ fn freeze(
             } else if f.frozen_code != 0 {
                 Err(Error::Conflict)
             } else {
-                let row = Family {
-                    id: f.id,
-                    agent: f.agent,
-                    task: f.task,
-                    hypothesis: f.hypothesis,
-                    method: f.method,
-                    trials: f.trials,
-                    corrected: f.corrected,
-                    frozen_code: code,
-                    frozen_params: params,
-                    frozen_data: data_version,
-                    holdout: f.holdout,
-                    promoted: f.promoted,
-                    rejected: f.rejected,
-                };
-                Ok((one(Write::PutFamily(row)), Reply::Ack))
+                match find_trial(&s.trials, trial) {
+                    None => Err(Error::NotFound),
+                    Some(t) => freeze_trial(f, t),
+                }
             }
         }
     }
+}
+
+fn freeze_trial(f: Family, t: Trial) -> Outcome {
+    if t.family != f.id {
+        return Err(Error::Invalid);
+    }
+    if t.code == 0 || t.params == 0 || t.data_version == 0 {
+        return Err(Error::Invalid);
+    }
+    let code = t.code;
+    let params = t.params;
+    let data_version = t.data_version;
+    let row = Family {
+        id: f.id,
+        agent: f.agent,
+        task: f.task,
+        hypothesis: f.hypothesis,
+        method: f.method,
+        trials: f.trials,
+        corrected: f.corrected,
+        frozen_code: code,
+        frozen_params: params,
+        frozen_data: data_version,
+        holdout: f.holdout,
+        promoted: f.promoted,
+        rejected: f.rejected,
+    };
+    Ok((one(Write::PutFamily(row)), Reply::Ack))
 }
 
 fn submit_holdout(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
@@ -837,6 +1027,8 @@ fn fleet(actor: &Principal, s: &Snapshot) -> Outcome {
             agents: s.agents.clone(),
             families: s.families.clone(),
             trials: s.trials.clone(),
+            texts: s.texts.clone(),
+            curves: s.curves.clone(),
         },
     ))
 }
@@ -844,12 +1036,12 @@ fn fleet(actor: &Principal, s: &Snapshot) -> Outcome {
 /// One step of the ledger. A refusal commits nothing.
 pub fn transition(actor: &Principal, s: &Snapshot, cmd: &Command) -> Outcome {
     match cmd {
-        Command::Enroll { agent, budget, token_budget, sandbox } => {
-            enroll(actor, s, *agent, *budget, *token_budget, *sandbox)
+        Command::Enroll { agent, budget, token_budget, sandbox, name } => {
+            enroll(actor, s, *agent, *budget, *token_budget, *sandbox, name)
         }
-        Command::PreRegister { hypothesis, method } => pre_register(actor, s, *hypothesis, *method),
-        Command::RequestTrial { family, code, params, decision_time } => {
-            request_trial(actor, s, *family, *code, *params, *decision_time)
+        Command::PreRegister { hypothesis, method } => pre_register(actor, s, hypothesis, method),
+        Command::RequestTrial { family, name, code, params, decision_time } => {
+            request_trial(actor, s, *family, name, code, params, *decision_time)
         }
         Command::RecordTrial {
             pending,
@@ -861,6 +1053,7 @@ pub fn transition(actor: &Principal, s: &Snapshot, cmd: &Command) -> Outcome {
             kurt,
             samples,
             tokens,
+            curve,
         } => record_trial(
             actor,
             s,
@@ -873,10 +1066,9 @@ pub fn transition(actor: &Principal, s: &Snapshot, cmd: &Command) -> Outcome {
             *kurt,
             *samples,
             *tokens,
+            curve,
         ),
-        Command::Freeze { family, code, params, data_version } => {
-            freeze(actor, s, *family, *code, *params, *data_version)
-        }
+        Command::Freeze { family, trial } => freeze(actor, s, *family, *trial),
         Command::SubmitHoldout { family } => submit_holdout(actor, s, *family),
         Command::EvaluateHoldout { family, passed } => evaluate_holdout(actor, s, *family, *passed),
         Command::Promote { family } => promote(actor, s, *family),
@@ -897,6 +1089,8 @@ fn apply_write(s: &mut Snapshot, w: Write) {
         Write::PutTrial(t) => Trial::put(&mut s.trials, t),
         Write::PutComment(c) => Comment::put(&mut s.comments, c),
         Write::PutAlert(a) => Alert::put(&mut s.alerts, a),
+        Write::PutText(t) => Text::put(&mut s.texts, t),
+        Write::PutCurve(c) => Curve::put(&mut s.curves, c),
         Write::Emit(_) => {}
     }
 }
@@ -910,6 +1104,8 @@ fn sql_write(w: &Write, out: &mut Vec<h5i_app_sql::Write>) {
         Write::PutTrial(t) => out.push(t.sql_put()),
         Write::PutComment(c) => out.push(c.sql_put()),
         Write::PutAlert(a) => out.push(a.sql_put()),
+        Write::PutText(t) => out.push(t.sql_put()),
+        Write::PutCurve(c) => out.push(c.sql_put()),
         Write::Emit(_) => {}
     }
 }
@@ -935,34 +1131,51 @@ mod tests {
         }
     }
 
+    fn text(value: &str) -> Vec<u8> {
+        value.as_bytes().to_vec()
+    }
+
+    /// Request a trial of `code` in `family` and have the worker record it.
+    fn tried(s: &Snapshot, id: u64, family: u64, code: &str) -> (Snapshot, u64) {
+        let (s, r) = run(s, agent(id), Command::RequestTrial {
+            family, name: text("s"), code: text(code), params: text("{}"), decision_time: 1,
+        });
+        let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
+        let (s, r) = run(&s, worker(), Command::RecordTrial {
+            pending, data_version: 1, score: 0, corrected: 0, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 0, curve: text("{}"),
+        });
+        assert_eq!(r, Ok(Reply::Ack));
+        (s, pending)
+    }
+
     #[test]
     fn an_agent_cannot_drop_or_rewrite_a_trial() {
         let s = Snapshot::default();
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 7, budget: 2, token_budget: 10, sandbox: 0 });
-        let (s, r) = run(&s, agent(7), Command::PreRegister { hypothesis: 11, method: 12 });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 7, budget: 2, token_budget: 10, sandbox: 0, name: Vec::new() });
+        let (s, r) = run(&s, agent(7), Command::PreRegister { hypothesis: text("h11"), method: text("m12") });
         let Reply::Created(family) = r.unwrap() else { panic!("family") };
         let (s, r) = run(
             &s,
             agent(7),
-            Command::RequestTrial { family, code: 3, params: 4, decision_time: 5 },
+            Command::RequestTrial { family, name: text("s"), code: text("c3"), params: text("p4"), decision_time: 5 },
         );
         let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
         assert_eq!(
-            run(&s, agent(7), Command::RecordTrial { pending, data_version: 1, score: 9, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 }).1,
+            run(&s, agent(7), Command::RecordTrial { pending, data_version: 1, score: 9, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1, curve: Vec::new() }).1,
             Err(Error::Forbidden)
         );
-        let (s, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 4, corrected: 800_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
+        let (s, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 4, corrected: 800_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1, curve: Vec::new() });
         assert_eq!(r, Ok(Reply::Ack));
-        let (s2, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 100, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
+        let (s2, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 100, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1, curve: Vec::new() });
         assert_eq!(r, Err(Error::Conflict));
         assert_eq!(s2.families[0].trials, s.families[0].trials);
         let (s, r) = run(
             &s,
             agent(7),
-            Command::RequestTrial { family, code: 8, params: 4, decision_time: 6 },
+            Command::RequestTrial { family, name: text("s"), code: text("c8"), params: text("p4"), decision_time: 6 },
         );
         let Reply::Created(pending2) = r.unwrap() else { panic!("pending2") };
-        let (s, _) = run(&s, worker(), Command::RecordTrial { pending: pending2, data_version: 1, score: 9, corrected: 100_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
+        let (s, _) = run(&s, worker(), Command::RecordTrial { pending: pending2, data_version: 1, score: 9, corrected: 100_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1, curve: Vec::new() });
         assert_eq!(s.families[0].trials, 2);
         assert_eq!(s.families[0].corrected, 100_000);
         assert_eq!(s.trials[1].score, 9);
@@ -975,7 +1188,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            run(&s, agent(7), Command::RequestTrial { family, code: 1, params: 1, decision_time: 1 }).1,
+            run(&s, agent(7), Command::RequestTrial { family, name: text("s"), code: text("c1"), params: text("p1"), decision_time: 1 }).1,
             Err(Error::Budget)
         );
     }
@@ -983,17 +1196,21 @@ mod tests {
     #[test]
     fn holdout_is_once_and_only_a_human_promotes_a_pass() {
         let s = Snapshot::default();
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 3, budget: 5, token_budget: 5, sandbox: 1 });
-        let (s, r) = run(&s, agent(3), Command::PreRegister { hypothesis: 1, method: 2 });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 3, budget: 5, token_budget: 5, sandbox: 1, name: Vec::new() });
+        let (s, r) = run(&s, agent(3), Command::PreRegister { hypothesis: text("h1"), method: text("m2") });
         let Reply::Created(family) = r.unwrap() else { panic!("family") };
         // A second pre-registration creates another family; the first row does not change.
-        let (s, _) = run(&s, agent(3), Command::PreRegister { hypothesis: 9, method: 8 });
-        assert_eq!(s.families[0].hypothesis, 1);
-        assert_eq!(s.families[0].method, 2);
+        let (s, _) = run(&s, agent(3), Command::PreRegister { hypothesis: text("h9"), method: text("m8") });
+        let hypothesis = s.families[0].hypothesis;
+        assert_eq!(s.texts.iter().find(|t| t.id == hypothesis).unwrap().body, text("h1"));
+        assert_eq!(s.texts.len(), 4);
         assert_eq!(run(&s, agent(3), Command::SubmitHoldout { family }).1, Err(Error::Conflict));
-        let (s, _) = run(&s, agent(3), Command::Freeze { family, code: 4, params: 5, data_version: 6 });
+        let (s, first) = tried(&s, 3, family, "a");
+        let (s, second) = tried(&s, 3, family, "b");
+        let (s, _) = run(&s, agent(3), Command::Freeze { family, trial: first });
+        assert_eq!(s.families[0].frozen_code, s.trials[0].code);
         assert_eq!(
-            run(&s, agent(3), Command::Freeze { family, code: 7, params: 5, data_version: 6 }).1,
+            run(&s, agent(3), Command::Freeze { family, trial: second }).1,
             Err(Error::Conflict)
         );
         let (s, _) = run(&s, agent(3), Command::SubmitHoldout { family });
@@ -1013,13 +1230,14 @@ mod tests {
     #[test]
     fn a_passing_holdout_promotes_once_and_agents_stay_on_their_fork() {
         let s = Snapshot::default();
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 1, budget: 1, token_budget: 1, sandbox: 0 });
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 2, budget: 1, token_budget: 1, sandbox: 1 });
-        let (s, r) = run(&s, agent(1), Command::PreRegister { hypothesis: 4, method: 5 });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 1, budget: 1, token_budget: 1, sandbox: 0, name: Vec::new() });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 2, budget: 1, token_budget: 1, sandbox: 1, name: Vec::new() });
+        let (s, r) = run(&s, agent(1), Command::PreRegister { hypothesis: text("h4"), method: text("m5") });
         let Reply::Created(family) = r.unwrap() else { panic!("family") };
         assert_eq!(run(&s, agent(2), Command::Report { family }).1, Err(Error::Forbidden));
-        assert_eq!(run(&s, agent(2), Command::RequestTrial { family, code: 1, params: 1, decision_time: 1 }).1, Err(Error::Forbidden));
-        let (s, _) = run(&s, agent(1), Command::Freeze { family, code: 8, params: 9, data_version: 10 });
+        assert_eq!(run(&s, agent(2), Command::RequestTrial { family, name: text("s"), code: text("c1"), params: text("p1"), decision_time: 1 }).1, Err(Error::Forbidden));
+        let (s, trial) = tried(&s, 1, family, "a");
+        let (s, _) = run(&s, agent(1), Command::Freeze { family, trial });
         let (s, _) = run(&s, agent(1), Command::SubmitHoldout { family });
         let (s, _) = run(&s, worker(), Command::EvaluateHoldout { family, passed: HOLDOUT_PASS });
         assert_eq!(run(&s, agent(1), Command::Promote { family }).1, Err(Error::Forbidden));
@@ -1034,10 +1252,11 @@ mod tests {
     #[test]
     fn a_rejected_strategy_cannot_be_promoted_and_only_the_human_reviews() {
         let s = Snapshot::default();
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 1, budget: 1, token_budget: 1, sandbox: 0 });
-        let (s, r) = run(&s, agent(1), Command::PreRegister { hypothesis: 4, method: 5 });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 1, budget: 1, token_budget: 1, sandbox: 0, name: Vec::new() });
+        let (s, r) = run(&s, agent(1), Command::PreRegister { hypothesis: text("h4"), method: text("m5") });
         let Reply::Created(family) = r.unwrap() else { panic!("family") };
-        let (s, _) = run(&s, agent(1), Command::Freeze { family, code: 8, params: 9, data_version: 10 });
+        let (s, trial) = tried(&s, 1, family, "a");
+        let (s, _) = run(&s, agent(1), Command::Freeze { family, trial });
         let (s, _) = run(&s, agent(1), Command::SubmitHoldout { family });
         let (s, _) = run(&s, worker(), Command::EvaluateHoldout { family, passed: HOLDOUT_PASS });
         let text = b"no".to_vec();
@@ -1062,11 +1281,12 @@ mod tests {
         assert_eq!(r, Ok(Reply::Ack));
         assert_eq!(s.comments.len(), 1);
         assert_eq!(s.families[0].rejected, 1);
+        let next = s.meta.next_id;
         let (s, r) = run(&s, human(), Command::Comment { family, text: b"see".to_vec() });
-        assert_eq!(r, Ok(Reply::Created(2)));
+        assert_eq!(r, Ok(Reply::Created(next)));
         assert_eq!(s.comments[1].mark, MARK_NOTE);
         let (s, r) = run(&s, worker(), Command::NoteAlert { kind: b"budget".to_vec(), detail: b"over".to_vec() });
-        assert_eq!(r, Ok(Reply::Created(3)));
+        assert_eq!(r, Ok(Reply::Created(next + 1)));
         assert_eq!(s.alerts.len(), 1);
         let (again, r) = run(&s, human(), Command::NoteAlert { kind: b"budget".to_vec(), detail: b"over".to_vec() });
         assert_eq!(r, Ok(Reply::Ack));
@@ -1077,13 +1297,13 @@ mod tests {
     #[test]
     fn the_report_returns_the_stored_correction_not_the_raw_score() {
         let s = Snapshot::default();
-        let (s, _) = run(&s, human(), Command::Enroll { agent: 4, budget: 2, token_budget: 2, sandbox: 0 });
-        let (s, r) = run(&s, agent(4), Command::PreRegister { hypothesis: 1, method: 1 });
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 4, budget: 2, token_budget: 2, sandbox: 0, name: Vec::new() });
+        let (s, r) = run(&s, agent(4), Command::PreRegister { hypothesis: text("h1"), method: text("m1") });
         let Reply::Created(family) = r.unwrap() else { panic!("family") };
-        let (s, r) = run(&s, agent(4), Command::RequestTrial { family, code: 2, params: 2, decision_time: 3 });
+        let (s, r) = run(&s, agent(4), Command::RequestTrial { family, name: text("s"), code: text("c2"), params: text("p2"), decision_time: 3 });
         let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
         let (s, _) = run(&s, worker(), Command::RecordTrial {
-            pending, data_version: 1, score: 50, corrected: 250_000, sharpe: 1, skew: 2, kurt: 3, samples: 4, tokens: 0,
+            pending, data_version: 1, score: 50, corrected: 250_000, sharpe: 1, skew: 2, kurt: 3, samples: 4, tokens: 0, curve: Vec::new(),
         });
         assert_eq!(s.trials[0].score, 50);
         assert_eq!(s.trials[0].samples, 4);
@@ -1094,5 +1314,60 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn texts_are_stored_once_and_named_by_id() {
+        let s = Snapshot::default();
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 2, budget: 3, token_budget: 0, sandbox: 0, name: text("trend") });
+        let label = s.agents[0].label;
+        assert_ne!(label, 0);
+        assert_eq!(s.texts.iter().find(|t| t.id == label).unwrap().kind, TEXT_AGENT);
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 3, budget: 0, token_budget: 0, sandbox: 0, name: text("trend") });
+        assert_eq!(s.agents[1].label, label);
+        let (s, r) = run(&s, agent(2), Command::PreRegister { hypothesis: text(""), method: text("m") });
+        assert_eq!(r, Err(Error::Invalid));
+        let (s, r) = run(&s, agent(2), Command::PreRegister { hypothesis: text("momentum persists"), method: text("ma-cross") });
+        let Reply::Created(family) = r.unwrap() else { panic!("family") };
+        let request = |s: &Snapshot, code: &str, params: &str| {
+            run(s, agent(2), Command::RequestTrial {
+                family, name: text("cross"), code: text(code), params: text(params), decision_time: 9,
+            })
+        };
+        let (s, _) = request(&s, "long when sma(5) > sma(20)", "{\"n\":1}");
+        let (s, _) = request(&s, "long when sma(5) > sma(20)", "{\"n\":2}");
+        assert_eq!(s.pendings[0].code, s.pendings[1].code);
+        assert_ne!(s.pendings[0].params, s.pendings[1].params);
+        let code = s.pendings[0].code;
+        let row = s.texts.iter().find(|t| t.id == code).unwrap();
+        assert_eq!(row.kind, TEXT_CODE);
+        assert_eq!(row.name, text("cross"));
+        assert_eq!(row.body, text("long when sma(5) > sma(20)"));
+        assert_eq!(s.texts.iter().filter(|t| t.kind == TEXT_CODE).count(), 1);
+        assert_eq!(request(&s, "", "{}").1, Err(Error::Invalid));
+    }
+
+    #[test]
+    fn only_a_counted_trial_of_the_family_can_be_frozen() {
+        let s = Snapshot::default();
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 5, budget: 4, token_budget: 0, sandbox: 0, name: Vec::new() });
+        let (s, r) = run(&s, agent(5), Command::PreRegister { hypothesis: text("a"), method: text("b") });
+        let Reply::Created(one) = r.unwrap() else { panic!("family") };
+        let (s, r) = run(&s, agent(5), Command::PreRegister { hypothesis: text("c"), method: text("d") });
+        let Reply::Created(other) = r.unwrap() else { panic!("family") };
+        let (s, r) = run(&s, agent(5), Command::RequestTrial {
+            family: one, name: text("s"), code: text("x"), params: text("{}"), decision_time: 1,
+        });
+        let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
+        assert_eq!(run(&s, agent(5), Command::Freeze { family: one, trial: pending }).1, Err(Error::NotFound));
+        let (s, trial) = tried(&s, 5, one, "y");
+        assert_eq!(run(&s, agent(5), Command::Freeze { family: other, trial }).1, Err(Error::Invalid));
+        let (s, r) = run(&s, agent(5), Command::Freeze { family: one, trial });
+        assert_eq!(r, Ok(Reply::Ack));
+        let row = find_family(&s.families, one).unwrap();
+        let counted = find_trial(&s.trials, trial).unwrap();
+        assert_eq!((row.frozen_code, row.frozen_params, row.frozen_data), (counted.code, counted.params, counted.data_version));
+        assert_eq!(s.curves.len(), 1);
+        assert_eq!(s.curves[0].id, trial);
     }
 }

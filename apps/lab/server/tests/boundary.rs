@@ -307,6 +307,7 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
             budget: 2,
             token_budget: 2,
             sandbox: 0,
+            name: Vec::new(),
         },
     )
     .0;
@@ -318,6 +319,7 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
             budget: 2,
             token_budget: 2,
             sandbox: 1,
+            name: Vec::new(),
         },
     )
     .0;
@@ -325,8 +327,8 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
         &snap,
         agent(1),
         k::Command::PreRegister {
-            hypothesis: 3,
-            method: 4,
+            hypothesis: b"h3".to_vec(),
+            method: b"m4".to_vec(),
         },
     );
     let k::Reply::Created(family) = created.unwrap() else {
@@ -337,8 +339,9 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
         agent(1),
         k::Command::RequestTrial {
             family,
-            code: 9,
-            params: 8,
+            name: b"s".to_vec(),
+            code: b"c9".to_vec(),
+            params: b"{}".to_vec(),
             decision_time: 100,
         },
     );
@@ -358,7 +361,8 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
                 skew: 0,
                 kurt: 0,
                 samples: 0,
-                tokens: 0
+                tokens: 0,
+                curve: Vec::new(),
             },
         )
         .1,
@@ -377,6 +381,7 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
             kurt: 0,
             samples: 0,
             tokens: 0,
+            curve: Vec::new(),
         },
     );
     assert_eq!(snap.families[0].trials, 1);
