@@ -1,6 +1,6 @@
 //! In-terminal, Jupyter-compatible notebook for h5i-db.
 //!
-//! Design and rationale: `ROADMAP_NOTEBOOK.md` at the repo root.
+//! Design and rationale: `docs/ROADMAP_NOTEBOOK.md`.
 //!
 //! The crate is a notebook *client*, not a kernel and not a server. It owns
 //! the document (nbformat v4), the kernel lifecycle, the rendering of outputs
