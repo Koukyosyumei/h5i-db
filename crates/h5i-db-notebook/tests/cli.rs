@@ -32,6 +32,7 @@ fn test_kernel() -> Option<(String, PathBuf)> {
 
 struct Nb {
     dir: TempDir,
+    runtime: TempDir,
     notebook: PathBuf,
     jupyter_path: Option<PathBuf>,
 }
@@ -48,22 +49,28 @@ impl Nb {
         // sockets to itself. It has to be set on every invocation: `serve`
         // binds where its own environment says, and `status` / `ls` look there
         // again from a fresh process.
-        let runtime = dir.path().join("runtime");
-        std::fs::create_dir_all(&runtime).unwrap();
+        //
+        // It lives directly under /tmp, not under `dir`: macOS's temp dir is
+        // /var/folders/../T/, and a socket path below it plus .tmpXXXXXX/ and
+        // h5i-db/nb/ reaches the 104-byte `sun_path` limit. tempfile creates
+        // it 0700.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let runtime = tempfile::Builder::new()
+            .prefix("nb")
+            .tempdir_in("/tmp")
+            .unwrap();
+        #[cfg(not(unix))]
+        let runtime = tempfile::tempdir().unwrap();
         Nb {
             dir,
+            runtime,
             notebook,
             jupyter_path: None,
         }
     }
 
     fn runtime_dir(&self) -> PathBuf {
-        self.dir.path().join("runtime")
+        self.runtime.path().to_path_buf()
     }
 
     fn command(&self, args: &[&str]) -> Command {

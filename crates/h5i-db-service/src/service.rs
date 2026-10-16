@@ -23,6 +23,7 @@ use crate::types::{
 /// sealed span, and it is not serializable: the rows stay in the process that
 /// holds the grant.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum HoldoutOpened {
     Completed(HoldoutReceipt),
     Grant(HoldoutGrant),

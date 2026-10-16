@@ -997,6 +997,7 @@ fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 ///
 /// Shared by session construction and [`H5iSession::refresh`]. The two used to
 /// be separate copies, and the copy in `refresh` had quietly lost the embargo.
+#[allow(clippy::too_many_arguments)]
 fn register_resolved_table(
     ctx: &SessionContext,
     db: &Arc<Database>,

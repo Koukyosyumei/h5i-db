@@ -171,8 +171,10 @@ impl HoldoutRecord {
     }
 }
 
-/// What [`Database::begin_holdout`] returns.
+/// What [`Database::begin_holdout`] returns. Built once per call and matched
+/// right away, so the variant sizes do not matter.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum HoldoutOpen {
     /// This key already finished. The summary is the stored one. No second read.
     Completed(HoldoutRecord),

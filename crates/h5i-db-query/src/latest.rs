@@ -327,6 +327,7 @@ impl LatestByStore {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build(
         &self,
         segment: &SegmentMeta,

@@ -1704,6 +1704,7 @@ impl crate::database::Database {
 
     /// The current base head is this fork table's promotion, or only compaction
     /// has happened since. A later non-compaction write is not a replay.
+    #[allow(clippy::too_many_arguments)]
     async fn replay_shadow_promote(
         &self,
         fork_name: &str,

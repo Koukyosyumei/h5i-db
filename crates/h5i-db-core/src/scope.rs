@@ -337,7 +337,11 @@ mod tests {
             ..ReadScope::default()
         };
         let vis = scope
-            .classify("trades", Some(TimeUnit::Nanosecond), &[seal.clone()])
+            .classify(
+                "trades",
+                Some(TimeUnit::Nanosecond),
+                std::slice::from_ref(&seal),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(vis.ceiling_raw, Some(15));
