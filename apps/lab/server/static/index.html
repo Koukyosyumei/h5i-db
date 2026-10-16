@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab</title>
+<style>
+/* Palette transcribed from Harbor Dark (MIT), HANCORE, 2025.
+   https://github.com/HANCORE-linux/omarchy-harbordark-theme
+   See README.md for the license notice. */
+:root {
+  --hd-bg: #1B1B1B;
+  --hd-bg-darker: #141414;
+  --hd-bg-lighter: #262626;
+  --hd-fg: #efebdc;
+  --hd-fg-dim: #C0AF7F;
+  --hd-muted: #89856b;
+  --hd-accent: #e75a50;
+  --hd-selection: #323232;
+  --hd-red: #F44336;
+  --hd-yellow: #a99b7a;
+  --hd-blue: #e58980;
+  --hd-cyan: #6d6d6d;
+  --hd-green: #77838a;
+  --hd-line: #323232;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--hd-bg);
+  color: var(--hd-fg);
+  font: 15px/1.45 "Iosevka", "IBM Plex Sans", sans-serif;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.8rem 1.2rem;
+  background: var(--hd-bg-darker);
+  border-bottom: 1px solid var(--hd-line);
+}
+h1 { font-size: 1.1rem; font-weight: 500; margin: 0; letter-spacing: 0.04em; }
+h2 { font-size: 0.95rem; font-weight: 500; color: var(--hd-fg-dim); margin: 0 0 0.6rem; }
+.trust { color: var(--hd-muted); font-size: 0.85rem; }
+main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 1rem; padding: 1rem; }
+section {
+  background: var(--hd-bg-lighter);
+  border: 1px solid var(--hd-line);
+  padding: 0.9rem 1rem;
+  min-width: 0;
+}
+.wide { grid-column: 1 / -1; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--hd-line); }
+th { color: var(--hd-muted); font-weight: 500; }
+button, input {
+  background: var(--hd-bg);
+  color: var(--hd-fg);
+  border: 1px solid var(--hd-cyan);
+  padding: 0.3rem 0.55rem;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
+.bad { color: var(--hd-red); }
+.ok { color: var(--hd-fg-dim); }
+.token { min-width: 16rem; }
+@media (max-width: 800px) {
+  main { grid-template-columns: 1fr; }
+  header { flex-direction: column; align-items: stretch; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>research lab</h1>
+  <p class="trust" id="trust">advisory: an agent with a shell can open the data directory. enforced: an h5i box denies that path, so the API is the only way in.</p>
+  <input class="token" id="token" placeholder="bearer token" autocomplete="off">
+</header>
+<main>
+  <section>
+    <h2>fleet</h2>
+    <table id="agents"><thead><tr><th>agent</th><th>trust</th><th>trials</th><th>budget</th><th>tokens</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>leaderboard</h2>
+    <p class="trust">Ranked on the corrected score, one point off the raw best for every extra trial.</p>
+    <table id="board"><thead><tr><th>family</th><th>trials</th><th>raw best</th><th>reported</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="wide">
+    <h2>review</h2>
+    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>holdout</th><th>promoted</th><th></th></tr></thead><tbody></tbody></table>
+    <p><input id="comment" placeholder="comment back to the agent"><button id="send">comment</button></p>
+  </section>
+  <section>
+    <h2>lineage</h2>
+    <table id="lineage"><thead><tr><th>trial</th><th>code</th><th>params</th><th>version</th><th>decision</th><th>score</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>activity</h2>
+    <table id="activity"><thead><tr><th>agent</th><th>trust</th><th>pid</th><th>state</th><th>output</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>alerts</h2>
+    <table id="alerts"><thead><tr><th>kind</th><th>detail</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+const tokenEl = document.querySelector("#token");
+tokenEl.value = sessionStorage.getItem("lab-token") || "";
+tokenEl.addEventListener("change", () => sessionStorage.setItem("lab-token", tokenEl.value));
+function headers() {
+  return { "authorization": "Bearer " + tokenEl.value, "content-type": "application/json" };
+}
+async function rpc(cmd) {
+  const res = await fetch("/rpc", { method: "POST", headers: headers(), body: JSON.stringify(cmd) });
+  return res.json();
+}
+function holdoutName(n) {
+  return { 0: "none", 1: "pass", 2: "fail", 3: "queued" }[n] || String(n);
+}
+function rows(table, html) { table.querySelector("tbody").innerHTML = html; }
+async function refresh() {
+  if (!tokenEl.value) return;
+  const fleet = await rpc({ cmd: "fleet" });
+  const agents = fleet.agents || [];
+  const families = fleet.families || [];
+  const trials = fleet.trials || [];
+  const enforced = agents.some(a => a.sandbox === 1);
+  const advisory = agents.some(a => a.sandbox === 0);
+  document.querySelector("#trust").textContent = enforced && advisory
+    ? "mixed fleet. advisory agents can open the data directory. enforced agents run in an h5i box that denies it."
+    : enforced
+      ? "enforced: agents run in an h5i box. the data directory is not granted, so the API is the only path."
+      : "advisory: no sandbox. the API refuses a sealed read, and an agent with a shell can still open the files.";
+  rows(document.querySelector("#agents"), agents.map(a =>
+    `<tr><td>${a.id}</td><td>${a.trust}</td><td>${a.used}</td><td>${a.budget}</td><td>${a.tokens_used}/${a.token_budget}</td></tr>`).join(""));
+  const ranked = families.slice().sort((a, b) => b.reported - a.reported);
+  rows(document.querySelector("#board"), ranked.map(f =>
+    `<tr><td>${f.id}</td><td>${f.trials}</td><td>${f.best}</td><td class="${f.trials > 1 ? "ok" : ""}">${f.reported}</td></tr>`).join(""));
+  rows(document.querySelector("#review"), families.map(f =>
+    `<tr><td>${f.id}</td><td>${f.hypothesis}/${f.method}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${f.holdout === 1 && !f.promoted ? `<button data-promote="${f.id}">promote</button>` : ""}</td></tr>`).join(""));
+  rows(document.querySelector("#lineage"), trials.map(t =>
+    `<tr><td>${t.id}</td><td>${t.code}</td><td>${t.params}</td><td>${t.data_version}</td><td>${t.decision_time}</td><td>${t.score}</td></tr>`).join(""));
+  const live = await fetch("/api/activity", { headers: headers() }).then(r => r.json()).catch(() => ({ agents: [] }));
+  rows(document.querySelector("#activity"), (live.agents || []).map(a =>
+    `<tr><td>${a.agent}</td><td>${a.trust}</td><td>${a.pid}</td><td>${a.running}</td><td>${(a.output || "").slice(-180)}</td></tr>`).join(""));
+  const alerts = await fetch("/api/alerts", { headers: headers() }).then(r => r.json()).catch(() => ({ alerts: "[]" }));
+  let parsed = [];
+  try { parsed = JSON.parse(alerts.alerts || "[]"); } catch (e) { parsed = []; }
+  rows(document.querySelector("#alerts"), parsed.map(a => `<tr><td class="bad">${a.kind}</td><td>${a.detail}</td></tr>`).join(""));
+}
+document.body.addEventListener("click", async (event) => {
+  const id = event.target.dataset && event.target.dataset.promote;
+  if (!id) return;
+  await rpc({ cmd: "promote", family: Number(id) });
+  refresh();
+});
+document.querySelector("#send").addEventListener("click", async () => {
+  const family = Number((document.querySelector("#review tbody tr td") || {}).textContent || 0);
+  await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family, text: document.querySelector("#comment").value }) });
+  document.querySelector("#comment").value = "";
+});
+setInterval(refresh, 3000);
+refresh();
+</script>
+</body>
+</html>

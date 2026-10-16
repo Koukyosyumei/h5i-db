@@ -1,0 +1,879 @@
+//! Shell around [`lab_kernel`]. It moves bytes between the kernel, PostgreSQL,
+//! and the h5i-db worker. It does not decide who may do what.
+
+mod runner;
+mod worker;
+
+use std::sync::{Arc, Mutex};
+
+use axum::extract::{FromRef, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use h5i_app_core::{Kernel, TenantId};
+use h5i_app_http::{Actor, Api, Auth, error_body, reply};
+use h5i_app_json::Value as Out;
+use h5i_app_pg::outbox::{self, Deliver, Delivery};
+use h5i_app_pg::{DbError, Engine, ReplyCodec, Store, Tx};
+use lab_kernel as k;
+use serde::Deserialize;
+
+pub use runner::{
+    Activity, AgentProc, BoxSpec, Runner, SandboxMode, activity, looks_looping, looks_stalled,
+    start_agent, start_shell, stop_agent, wait_agent,
+};
+pub use worker::{DbWorker, kernel_claims};
+
+pub struct Lab;
+
+impl Kernel for Lab {
+    type Principal = k::Principal;
+    type Snapshot = k::Snapshot;
+    type Command = k::Command;
+    type WriteSet = Vec<k::Write>;
+    type Reply = k::Reply;
+    type Error = k::Error;
+
+    fn tenant(actor: &k::Principal) -> TenantId {
+        TenantId(actor.org)
+    }
+
+    fn transition(
+        actor: &k::Principal,
+        snap: &k::Snapshot,
+        cmd: &k::Command,
+    ) -> Result<(Vec<k::Write>, k::Reply), k::Error> {
+        k::transition(actor, snap, cmd)
+    }
+
+    fn apply(snap: &k::Snapshot, ws: &Vec<k::Write>) -> k::Snapshot {
+        k::apply(snap, ws)
+    }
+}
+
+/// Pack a role and an id into the token's user field.
+///
+/// The h5i-app token carries two integers. The high bits are the role and the
+/// low bits are the human or agent id, so a token cannot name a role the
+/// issuer did not sign.
+pub fn token_user(role: u64, id: u64) -> u64 {
+    (role << 60) | (id & ((1 << 60) - 1))
+}
+
+pub fn principal_from_token(org: u64, packed: u64) -> k::Principal {
+    let role = packed >> 60;
+    let id = packed & ((1 << 60) - 1);
+    k::Principal {
+        org,
+        user: id,
+        role,
+        agent: if role == k::ROLE_AGENT { id } else { 0 },
+    }
+}
+
+k::lab_tables!(Lab);
+
+pub struct LabStore;
+
+impl Store<Lab> for LabStore {
+    fn ddl() -> Vec<String> {
+        schema_ddl()
+    }
+
+    fn tables() -> Vec<&'static str> {
+        schema_tables()
+    }
+
+    async fn load(tx: &Tx<'_>, t: TenantId) -> Result<k::Snapshot, DbError> {
+        schema_load(tx, t).await
+    }
+
+    async fn write(tx: &Tx<'_>, t: TenantId, ws: &Vec<k::Write>) -> Result<(), DbError> {
+        schema_store(tx, t, ws).await?;
+        for w in ws {
+            if let k::Write::Emit(effect) = w {
+                let payload = format!("{}:{}", effect.kind, effect.id).into_bytes();
+                outbox::enqueue(tx, t, effect.dest, &payload).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+enum CommandJson {
+    Enroll {
+        agent: u64,
+        budget: u64,
+        token_budget: u64,
+        sandbox: u64,
+    },
+    PreRegister {
+        hypothesis: u64,
+        method: u64,
+    },
+    RequestTrial {
+        family: u64,
+        code: u64,
+        params: u64,
+        decision_time: u64,
+    },
+    RecordTrial {
+        pending: u64,
+        data_version: u64,
+        score: u64,
+        tokens: u64,
+    },
+    Freeze {
+        family: u64,
+        code: u64,
+        params: u64,
+        data_version: u64,
+    },
+    SubmitHoldout {
+        family: u64,
+    },
+    EvaluateHoldout {
+        family: u64,
+        passed: u64,
+    },
+    Promote {
+        family: u64,
+    },
+    Report {
+        family: u64,
+    },
+    Fleet,
+}
+
+impl From<CommandJson> for k::Command {
+    fn from(c: CommandJson) -> Self {
+        match c {
+            CommandJson::Enroll {
+                agent,
+                budget,
+                token_budget,
+                sandbox,
+            } => k::Command::Enroll {
+                agent,
+                budget,
+                token_budget,
+                sandbox,
+            },
+            CommandJson::PreRegister { hypothesis, method } => {
+                k::Command::PreRegister { hypothesis, method }
+            }
+            CommandJson::RequestTrial {
+                family,
+                code,
+                params,
+                decision_time,
+            } => k::Command::RequestTrial {
+                family,
+                code,
+                params,
+                decision_time,
+            },
+            CommandJson::Freeze {
+                family,
+                code,
+                params,
+                data_version,
+            } => k::Command::Freeze {
+                family,
+                code,
+                params,
+                data_version,
+            },
+            CommandJson::SubmitHoldout { family } => k::Command::SubmitHoldout { family },
+            CommandJson::RecordTrial {
+                pending,
+                data_version,
+                score,
+                tokens,
+            } => k::Command::RecordTrial {
+                pending,
+                data_version,
+                score,
+                tokens,
+            },
+            CommandJson::EvaluateHoldout { family, passed } => {
+                k::Command::EvaluateHoldout { family, passed }
+            }
+            CommandJson::Promote { family } => k::Command::Promote { family },
+            CommandJson::Report { family } => k::Command::Report { family },
+            CommandJson::Fleet => k::Command::Fleet,
+        }
+    }
+}
+
+fn agent_json(a: &k::Agent) -> Out {
+    Out::obj([
+        ("id", a.id.into()),
+        ("budget", a.budget.into()),
+        ("used", a.used.into()),
+        ("token_budget", a.token_budget.into()),
+        ("tokens_used", a.tokens_used.into()),
+        ("fork_id", a.fork_id.into()),
+        ("sandbox", a.sandbox.into()),
+        (
+            "trust",
+            Out::str(if a.sandbox == 0 {
+                "advisory"
+            } else {
+                "enforced"
+            }),
+        ),
+    ])
+}
+
+fn family_json(f: &k::Family) -> Out {
+    Out::obj([
+        ("id", f.id.into()),
+        ("agent", f.agent.into()),
+        ("task", f.task.into()),
+        ("hypothesis", f.hypothesis.into()),
+        ("method", f.method.into()),
+        ("trials", f.trials.into()),
+        ("best", f.best.into()),
+        ("reported", k::reported_score(f.best, f.trials).into()),
+        ("frozen_code", f.frozen_code.into()),
+        ("frozen_params", f.frozen_params.into()),
+        ("frozen_data", f.frozen_data.into()),
+        ("holdout", f.holdout.into()),
+        ("promoted", f.promoted.into()),
+    ])
+}
+
+fn trial_json(t: &k::Trial) -> Out {
+    Out::obj([
+        ("id", t.id.into()),
+        ("family", t.family.into()),
+        ("agent", t.agent.into()),
+        ("code", t.code.into()),
+        ("params", t.params.into()),
+        ("data_version", t.data_version.into()),
+        ("decision_time", t.decision_time.into()),
+        ("score", t.score.into()),
+        ("tokens", t.tokens.into()),
+    ])
+}
+
+impl h5i_app_http::Api<Lab> for LabStore {
+    fn decode_command(body: serde_json::Value) -> Result<k::Command, String> {
+        serde_json::from_value::<CommandJson>(body)
+            .map(Into::into)
+            .map_err(|e| e.to_string())
+    }
+
+    fn encode_reply(r: &k::Reply) -> Out {
+        match r {
+            k::Reply::Ack => Out::obj([("ok", Out::str("true"))]),
+            k::Reply::Created(id) => Out::obj([("id", (*id).into())]),
+            k::Reply::Metric {
+                trials,
+                best,
+                reported,
+            } => Out::obj([
+                ("trials", (*trials).into()),
+                ("best", (*best).into()),
+                ("reported", (*reported).into()),
+            ]),
+            k::Reply::Fleet {
+                agents,
+                families,
+                trials,
+            } => Out::obj([
+                ("agents", Out::Arr(agents.iter().map(agent_json).collect())),
+                (
+                    "families",
+                    Out::Arr(families.iter().map(family_json).collect()),
+                ),
+                ("trials", Out::Arr(trials.iter().map(trial_json).collect())),
+            ]),
+        }
+    }
+
+    fn encode_error(e: &k::Error) -> (StatusCode, Out) {
+        let (status, code) = match e {
+            k::Error::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            k::Error::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            k::Error::Conflict => (StatusCode::CONFLICT, "conflict"),
+            k::Error::Budget => (StatusCode::TOO_MANY_REQUESTS, "budget"),
+            k::Error::Overflow => (StatusCode::UNPROCESSABLE_ENTITY, "overflow"),
+            k::Error::Invalid => (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
+        };
+        (status, error_body(code))
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum StoredReply {
+    Ack,
+    Created(u64),
+    Metric {
+        trials: u64,
+        best: u64,
+        reported: u64,
+    },
+    // Kernel rows stay free of serde. The tuple order is the struct field order.
+    Fleet {
+        agents: Vec<(u64, u64, u64, u64, u64, u64, u64)>,
+        families: Vec<FamilyRow>,
+        trials: Vec<TrialRow>,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FamilyRow {
+    id: u64,
+    agent: u64,
+    task: u64,
+    hypothesis: u64,
+    method: u64,
+    trials: u64,
+    best: u64,
+    frozen_code: u64,
+    frozen_params: u64,
+    frozen_data: u64,
+    holdout: u64,
+    promoted: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TrialRow {
+    id: u64,
+    family: u64,
+    agent: u64,
+    code: u64,
+    params: u64,
+    data_version: u64,
+    decision_time: u64,
+    score: u64,
+    tokens: u64,
+}
+
+impl ReplyCodec<Lab> for LabStore {
+    fn fingerprint(cmd: &k::Command) -> Vec<u8> {
+        format!("{cmd:?}").into_bytes()
+    }
+
+    fn scope(actor: &k::Principal) -> String {
+        format!("r{}-{}", actor.role, actor.user)
+    }
+
+    fn encode(r: &k::Reply) -> Vec<u8> {
+        let stored = match r {
+            k::Reply::Ack => StoredReply::Ack,
+            k::Reply::Created(id) => StoredReply::Created(*id),
+            k::Reply::Metric {
+                trials,
+                best,
+                reported,
+            } => StoredReply::Metric {
+                trials: *trials,
+                best: *best,
+                reported: *reported,
+            },
+            k::Reply::Fleet {
+                agents,
+                families,
+                trials,
+            } => StoredReply::Fleet {
+                agents: agents
+                    .iter()
+                    .map(|a| {
+                        (
+                            a.id,
+                            a.budget,
+                            a.used,
+                            a.token_budget,
+                            a.tokens_used,
+                            a.fork_id,
+                            a.sandbox,
+                        )
+                    })
+                    .collect(),
+                families: families
+                    .iter()
+                    .map(|f| FamilyRow {
+                        id: f.id,
+                        agent: f.agent,
+                        task: f.task,
+                        hypothesis: f.hypothesis,
+                        method: f.method,
+                        trials: f.trials,
+                        best: f.best,
+                        frozen_code: f.frozen_code,
+                        frozen_params: f.frozen_params,
+                        frozen_data: f.frozen_data,
+                        holdout: f.holdout,
+                        promoted: f.promoted,
+                    })
+                    .collect(),
+                trials: trials
+                    .iter()
+                    .map(|t| TrialRow {
+                        id: t.id,
+                        family: t.family,
+                        agent: t.agent,
+                        code: t.code,
+                        params: t.params,
+                        data_version: t.data_version,
+                        decision_time: t.decision_time,
+                        score: t.score,
+                        tokens: t.tokens,
+                    })
+                    .collect(),
+            },
+        };
+        serde_json::to_vec(&stored).expect("stored replies serialize")
+    }
+
+    fn decode(bytes: &[u8]) -> Result<k::Reply, String> {
+        Ok(
+            match serde_json::from_slice(bytes).map_err(|e| e.to_string())? {
+                StoredReply::Ack => k::Reply::Ack,
+                StoredReply::Created(id) => k::Reply::Created(id),
+                StoredReply::Metric {
+                    trials,
+                    best,
+                    reported,
+                } => k::Reply::Metric {
+                    trials,
+                    best,
+                    reported,
+                },
+                StoredReply::Fleet {
+                    agents,
+                    families,
+                    trials,
+                } => k::Reply::Fleet {
+                    agents: agents
+                        .into_iter()
+                        .map(
+                            |(id, budget, used, token_budget, tokens_used, fork_id, sandbox)| {
+                                k::Agent {
+                                    id,
+                                    budget,
+                                    used,
+                                    token_budget,
+                                    tokens_used,
+                                    fork_id,
+                                    sandbox,
+                                }
+                            },
+                        )
+                        .collect(),
+                    families: families
+                        .into_iter()
+                        .map(|f| k::Family {
+                            id: f.id,
+                            agent: f.agent,
+                            task: f.task,
+                            hypothesis: f.hypothesis,
+                            method: f.method,
+                            trials: f.trials,
+                            best: f.best,
+                            frozen_code: f.frozen_code,
+                            frozen_params: f.frozen_params,
+                            frozen_data: f.frozen_data,
+                            holdout: f.holdout,
+                            promoted: f.promoted,
+                        })
+                        .collect(),
+                    trials: trials
+                        .into_iter()
+                        .map(|t| k::Trial {
+                            id: t.id,
+                            family: t.family,
+                            agent: t.agent,
+                            code: t.code,
+                            params: t.params,
+                            data_version: t.data_version,
+                            decision_time: t.decision_time,
+                            score: t.score,
+                            tokens: t.tokens,
+                        })
+                        .collect(),
+                },
+            },
+        )
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Alert {
+    pub kind: String,
+    pub detail: String,
+}
+
+#[derive(Clone)]
+pub struct App {
+    pub engine: Arc<Engine<Lab, LabStore>>,
+    pub auth: Auth<Lab>,
+    pub db: Arc<h5i_db_service::Service>,
+    pub alerts: Arc<Mutex<Vec<Alert>>>,
+    pub runner: Arc<Mutex<Runner>>,
+    pub seal_id: String,
+    pub holdout_table: String,
+}
+
+impl FromRef<App> for Auth<Lab> {
+    fn from_ref(app: &App) -> Self {
+        app.auth.clone()
+    }
+}
+
+impl App {
+    pub fn push_alert(&self, kind: &str, detail: impl Into<String>) {
+        let detail = detail.into();
+        let mut alerts = self.alerts.lock().expect("alerts");
+        if alerts
+            .iter()
+            .any(|alert| alert.kind == kind && alert.detail == detail)
+        {
+            return;
+        }
+        alerts.push(Alert {
+            kind: kind.into(),
+            detail,
+        });
+    }
+}
+
+/// Three or more trials with the same family, code and parameters.
+pub fn burst_details(trials: &[k::Trial]) -> Vec<String> {
+    let mut counts: Vec<((u64, u64, u64), u64)> = Vec::new();
+    for trial in trials {
+        let key = (trial.family, trial.code, trial.params);
+        if let Some(slot) = counts.iter_mut().find(|(found, _)| *found == key) {
+            slot.1 += 1;
+        } else {
+            counts.push((key, 1));
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 3)
+        .map(|((family, code, params), count)| {
+            format!("family {family} repeated code {code} params {params} {count} times")
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn three_identical_trials_are_a_burst() {
+        let trial = |id| k::Trial {
+            id,
+            family: 1,
+            agent: 1,
+            code: 4,
+            params: 5,
+            data_version: 1,
+            decision_time: 1,
+            score: 1,
+            tokens: 0,
+        };
+        assert!(burst_details(&[trial(1), trial(2)]).is_empty());
+        let details = burst_details(&[trial(1), trial(2), trial(3)]);
+        assert_eq!(details.len(), 1);
+        assert!(details[0].contains("family 1"));
+    }
+}
+
+const INDEX_HTML: &str = include_str!("../static/index.html");
+
+pub fn router(app: App) -> Router {
+    Router::new()
+        .route("/", get(|| async { axum::response::Html(INDEX_HTML) }))
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/rpc", post(rpc))
+        .route("/api/query", post(query))
+        .route("/api/alerts", get(alerts))
+        .route("/api/activity", get(activity_route))
+        .route("/api/agents/start", post(start))
+        .route("/api/agents/stop", post(stop))
+        .route("/api/comment", post(comment))
+        .with_state(app)
+}
+
+async fn rpc(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> axum::response::Response {
+    let cmd = match LabStore::decode_command(body) {
+        Ok(cmd) => cmd,
+        Err(message) => return reply(StatusCode::BAD_REQUEST, error_body(&message)),
+    };
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let result = match &key {
+        Some(k) => {
+            app.engine
+                .execute_idempotent(actor.principal(), k, &cmd)
+                .await
+        }
+        None => app.engine.execute(actor.principal(), &cmd).await,
+    };
+    match result {
+        Ok(Ok(value)) => reply(StatusCode::OK, LabStore::encode_reply(&value)),
+        Ok(Err(refusal)) => {
+            if matches!(refusal, k::Error::Forbidden) {
+                app.push_alert(
+                    "denied",
+                    format!("{cmd:?} by role {}", actor.principal().role),
+                );
+            }
+            let (status, body) = LabStore::encode_error(&refusal);
+            reply(status, body)
+        }
+        Err(DbError::IdempotencyConflict) => reply(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            error_body("idempotency key reused"),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "ledger request failed");
+            reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct QueryBody {
+    sql: String,
+    decision_time_ns: i64,
+}
+
+async fn query(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<QueryBody>,
+) -> axum::response::Response {
+    let principal = actor.principal();
+    if principal.role != k::ROLE_AGENT
+        && principal.role != k::ROLE_WORKER
+        && principal.role != k::ROLE_HUMAN
+    {
+        app.push_alert("denied", "query from an unknown role");
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    // An agent is pinned to its own fork. A human query still has no holdout grant.
+    let fork = if principal.role == k::ROLE_AGENT {
+        Some(format!("a-{}", principal.agent))
+    } else {
+        None
+    };
+    let handle = match app.db.handle(fork.as_deref(), None).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            app.push_alert("denied", error.to_string());
+            return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
+        }
+    };
+    match handle
+        .query(&h5i_db_service::QueryRequest {
+            decision_time_ns: body.decision_time_ns,
+            sql: body.sql,
+            max_rows: Some(100),
+        })
+        .await
+    {
+        Ok(result) => reply(
+            StatusCode::OK,
+            Out::obj([
+                (
+                    "decision_time_ns",
+                    Out::str(result.decision_time_ns.to_string()),
+                ),
+                (
+                    "rows",
+                    Out::str(serde_json::to_string(&result.rows).unwrap_or_else(|_| "[]".into())),
+                ),
+                (
+                    "truncated",
+                    Out::str(if result.truncated { "true" } else { "false" }),
+                ),
+            ]),
+        ),
+        Err(error) => {
+            let kind = if error.code() == "scope_denied" {
+                "lookahead"
+            } else {
+                "query"
+            };
+            app.push_alert(kind, error.to_string());
+            reply(StatusCode::FORBIDDEN, error_body(error.code()))
+        }
+    }
+}
+
+async fn alerts(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
+    if let Ok(snap) = app.engine.snapshot(TenantId(actor.principal().org)).await {
+        for detail in burst_details(&snap.trials) {
+            app.push_alert("duplicate", detail);
+        }
+    }
+    for row in activity(&app.runner) {
+        if looks_looping(&row.output) {
+            app.push_alert(
+                "looping",
+                format!("agent {} is repeating itself", row.agent),
+            );
+        }
+        if looks_stalled(
+            row.running,
+            row.output.len(),
+            row.elapsed,
+            std::time::Duration::from_secs(30),
+        ) {
+            app.push_alert("stalled", format!("agent {} has no output", row.agent));
+        }
+    }
+    let rows = app.alerts.lock().expect("alerts").clone();
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    reply(StatusCode::OK, Out::obj([("alerts", Out::str(&body))]))
+}
+
+async fn activity_route(State(app): State<App>, _actor: Actor<Lab>) -> axum::response::Response {
+    let rows = activity(&app.runner);
+    let body = Out::Arr(
+        rows.iter()
+            .map(|row| {
+                Out::obj([
+                    ("agent", row.agent.into()),
+                    ("trust", Out::str(row.trust)),
+                    ("pid", (row.pid as u64).into()),
+                    (
+                        "running",
+                        Out::str(if row.running { "true" } else { "false" }),
+                    ),
+                    ("output", Out::str(&row.output)),
+                ])
+            })
+            .collect(),
+    );
+    reply(StatusCode::OK, Out::obj([("agents", body)]))
+}
+
+#[derive(Deserialize)]
+struct StartBody {
+    agent: u64,
+    script: String,
+    data_dir: String,
+}
+
+async fn start(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<StartBody>,
+) -> axum::response::Response {
+    if actor.principal().role != k::ROLE_HUMAN {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    let snap = match app.engine.snapshot(TenantId(actor.principal().org)).await {
+        Ok(snap) => snap,
+        Err(error) => {
+            return reply(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error_body(&error.to_string()),
+            );
+        }
+    };
+    let Some(agent) = k::find_agent(&snap.agents, body.agent) else {
+        return reply(StatusCode::NOT_FOUND, error_body("not_found"));
+    };
+    let mode = if agent.sandbox == 0 {
+        SandboxMode::Advisory
+    } else {
+        SandboxMode::Box
+    };
+    match start_agent(&app.runner, body.agent, mode, &body.script, &body.data_dir) {
+        Ok(()) => reply(
+            StatusCode::OK,
+            Out::obj([("trust", Out::str(mode.label()))]),
+        ),
+        Err(error) => reply(StatusCode::UNPROCESSABLE_ENTITY, error_body(&error)),
+    }
+}
+
+#[derive(Deserialize)]
+struct StopBody {
+    agent: u64,
+}
+
+async fn stop(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<StopBody>,
+) -> axum::response::Response {
+    if actor.principal().role != k::ROLE_HUMAN {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    match stop_agent(&app.runner, body.agent) {
+        Ok(()) => reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))])),
+        Err(error) => reply(StatusCode::NOT_FOUND, error_body(&error)),
+    }
+}
+
+#[derive(Deserialize)]
+struct CommentBody {
+    family: u64,
+    text: String,
+}
+
+async fn comment(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<CommentBody>,
+) -> axum::response::Response {
+    if actor.principal().role != k::ROLE_HUMAN {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    app.runner
+        .lock()
+        .expect("runner")
+        .comments
+        .push(runner::Comment {
+            family: body.family,
+            text: body.text,
+        });
+    reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))]))
+}
+
+/// Deliver outbox effects to h5i-db, then record the result as a kernel command.
+pub struct EffectDeliver {
+    pub app: App,
+}
+
+impl Deliver<()> for EffectDeliver {
+    async fn deliver(&self, _endpoint: &(), delivery: &Delivery) -> Result<(), String> {
+        let payload = String::from_utf8(delivery.payload.clone()).map_err(|e| e.to_string())?;
+        let (kind, id) = payload.split_once(':').ok_or("effect payload")?;
+        let kind: u64 = kind
+            .parse()
+            .map_err(|e: std::num::ParseIntError| e.to_string())?;
+        let id: u64 = id
+            .parse()
+            .map_err(|e: std::num::ParseIntError| e.to_string())?;
+        let org = delivery.tenant.0;
+        DbWorker {
+            engine: Arc::clone(&self.app.engine),
+            db: Arc::clone(&self.app.db),
+            alerts: Arc::clone(&self.app.alerts),
+            seal_id: self.app.seal_id.clone(),
+            holdout_table: self.app.holdout_table.clone(),
+        }
+        .deliver(org, &delivery.key, kind, id)
+        .await
+    }
+}
