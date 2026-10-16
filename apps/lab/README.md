@@ -62,8 +62,11 @@ The fork is created on the first trial, not at enrollment. A trial effect runs
 a backtest on that fork. When the engine rejects the run, the worker records
 a score of zero and a trial with no returns, and the database still gets a
 `bt_trial` row for that run. Reconcile matches the two. The attempt counts,
-and the outbox does not retry a rejection. A promote publishes only tables the
-fork owns. Pins are the base it reads. A fork that never wrote has nothing to
+and the outbox does not retry a rejection. A delivery that fails until it is
+marked dead stays dead. A human puts those rows back on the queue with
+`POST /api/outbox/replay` (the alerts panel does this). The attempt count
+resets, and the same idempotency key delivers the first result again.
+A promote publishes only tables the fork owns. Pins are the base it reads. A fork that never wrote has nothing to
 publish; the ledger still records the human's promotion.
 
 Starting an agent puts a one-day token for that agent in `LAB_TOKEN` and

@@ -2281,6 +2281,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-postgres",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

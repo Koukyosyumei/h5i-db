@@ -104,6 +104,7 @@ button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
   </section>
   <section>
     <h2>alerts</h2>
+    <p><button id="replay">replay dead effects</button></p>
     <table id="alerts"><thead><tr><th>kind</th><th>detail</th></tr></thead><tbody></tbody></table>
   </section>
 </main>
@@ -174,6 +175,10 @@ document.body.addEventListener("click", async (event) => {
   const text = document.querySelector("#comment").value || "rejected";
   await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family: Number(reject), text, decision: "reject" }) });
   document.querySelector("#comment").value = "";
+  refresh();
+});
+document.querySelector("#replay").addEventListener("click", async () => {
+  await fetch("/api/outbox/replay", { method: "POST", headers: headers() });
   refresh();
 });
 document.querySelector("#send").addEventListener("click", async () => {

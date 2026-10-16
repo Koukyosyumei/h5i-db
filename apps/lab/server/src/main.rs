@@ -34,8 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let ledger_url = h5i_app_pg::with_schema(&url, "lab")?;
     let engine = Arc::new(Engine::<Lab, LabStore>::new(
-        pool(&h5i_app_pg::with_schema(&url, "lab")?, 8)?,
+        pool(&ledger_url, 8)?,
         EngineConfig::default(),
     ));
     engine.install_schema().await?;
@@ -48,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner: Arc::new(Mutex::new(Runner::new())),
         seal_id,
         holdout_table,
+        ledger_url,
     };
     let mut registry = HashMap::new();
     registry.insert(k::DEST_DB, ());

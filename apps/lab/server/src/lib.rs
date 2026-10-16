@@ -553,6 +553,8 @@ pub struct App {
     pub runner: Arc<Mutex<Runner>>,
     pub seal_id: String,
     pub holdout_table: String,
+    /// Ledger URL, including the schema search path. Used to replay dead effects.
+    pub ledger_url: String,
 }
 
 impl FromRef<App> for Auth<Lab> {
@@ -743,6 +745,12 @@ mod tests {
         assert!(!INDEX_HTML.contains("f.reported"));
         assert!(!INDEX_HTML.contains("raw best"));
     }
+
+    #[test]
+    fn the_page_can_replay_dead_effects() {
+        assert!(INDEX_HTML.contains("id=\"replay\""));
+        assert!(INDEX_HTML.contains("/api/outbox/replay"));
+    }
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -761,7 +769,44 @@ pub fn router(app: App) -> Router {
         .route("/api/agents/resume", post(resume))
         .route("/api/comment", post(comment))
         .route("/api/comments", get(comments))
+        .route("/api/outbox/replay", post(replay_outbox))
         .with_state(app)
+}
+
+/// Put dead outbox rows back on the queue.
+///
+/// The dispatcher skips a row once it is marked dead. This clears that flag
+/// and the attempt count, so the row is claimed again. The delivery key is
+/// the outbox id, and the worker's idempotency key is derived from it, so a
+/// replay of a finished effect returns the first result.
+pub async fn replay_dead_outbox(url: &str) -> Result<u64, tokio_postgres::Error> {
+    let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move {
+        if let Err(error) = connection.await {
+            tracing::error!(%error, "outbox replay connection ended");
+        }
+    });
+    client
+        .execute(
+            "UPDATE h5i_outbox \
+             SET dead = false, attempts = 0, last_error = NULL, lease_until = NULL \
+             WHERE dead",
+            &[],
+        )
+        .await
+}
+
+async fn replay_outbox(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
+    if actor.principal().role != k::ROLE_HUMAN {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    match replay_dead_outbox(&app.ledger_url).await {
+        Ok(revived) => reply(StatusCode::OK, Out::obj([("revived", revived.into())])),
+        Err(error) => {
+            tracing::error!(%error, "dead outbox rows were not replayed");
+            reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
+        }
+    }
 }
 
 async fn rpc(
