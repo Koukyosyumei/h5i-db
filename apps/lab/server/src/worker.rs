@@ -25,8 +25,7 @@ use h5i_db_backtest::window::TimeWindow;
 use h5i_db_core::database::ReadAt;
 use h5i_db_service::{
     BacktestRequest, CreateFork, ForkFrom, ForkState, HoldoutCall, HoldoutOpened, HoldoutReceipt,
-    PromoteOne, PromoteTable, PromotionState, ReadPoint, Service,
-    StateDocument, TrialState,
+    PromoteOne, PromoteTable, PromotionState, ReadPoint, Service, StateDocument, TrialState,
 };
 use lab_kernel as k;
 

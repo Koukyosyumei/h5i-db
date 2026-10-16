@@ -12,7 +12,9 @@ use lab_server::market::{DAY_NS, START_NS, demo_series, seed};
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().ok_or("usage: lab-demo-data <dir> [days] [sealed days]")?;
+    let path = args
+        .next()
+        .ok_or("usage: lab-demo-data <dir> [days] [sealed days]")?;
     let days: u32 = args.next().map(|v| v.parse()).transpose()?.unwrap_or(180);
     let sealed: u32 = args.next().map(|v| v.parse()).transpose()?.unwrap_or(30);
     if sealed == 0 || sealed >= days {
