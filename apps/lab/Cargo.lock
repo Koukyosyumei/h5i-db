@@ -2276,6 +2276,7 @@ dependencies = [
  "h5i-db-core",
  "h5i-db-service",
  "lab-kernel",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

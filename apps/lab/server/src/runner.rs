@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -107,7 +108,8 @@ pub fn start_shell(
     let mut runner = runner.lock().expect("runner");
     if let Some(pos) = runner.procs.iter().position(|proc| proc.agent == agent) {
         let mut old = runner.procs.remove(pos);
-        let _ = old.child.kill();
+        let _ = signal_tree(old.child.id(), libc::SIGKILL);
+        let _ = old.child.wait();
         for reader in old.readers {
             let _ = reader.join();
         }
@@ -125,16 +127,16 @@ pub fn start_shell(
     Ok(())
 }
 
-fn signal_agent(pid: u32, flag: &str) -> Result<(), String> {
-    let status = Command::new("kill")
-        .arg(flag)
-        .arg(pid.to_string())
-        .status()
-        .map_err(|error| error.to_string())?;
-    if status.success() {
+fn signal_tree(pid: u32, sig: i32) -> Result<(), String> {
+    // The child is its own process group, so this reaches processes it spawned.
+    let rc = unsafe { libc::kill(-(pid as i32), sig) };
+    if rc == 0 {
         Ok(())
     } else {
-        Err(format!("kill {flag} {pid} failed"))
+        Err(format!(
+            "signal {sig} to {pid}: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 }
 
@@ -143,7 +145,7 @@ pub fn pause_agent(runner: &Mutex<Runner>, agent: u64) -> Result<(), String> {
     let Some(proc) = runner.procs.iter_mut().find(|proc| proc.agent == agent) else {
         return Err("not running".into());
     };
-    signal_agent(proc.child.id(), "-STOP")?;
+    signal_tree(proc.child.id(), libc::SIGSTOP)?;
     proc.paused = true;
     Ok(())
 }
@@ -153,7 +155,7 @@ pub fn resume_agent(runner: &Mutex<Runner>, agent: u64) -> Result<(), String> {
     let Some(proc) = runner.procs.iter_mut().find(|proc| proc.agent == agent) else {
         return Err("not running".into());
     };
-    signal_agent(proc.child.id(), "-CONT")?;
+    signal_tree(proc.child.id(), libc::SIGCONT)?;
     proc.paused = false;
     Ok(())
 }
@@ -182,7 +184,8 @@ pub fn stop_agent(runner: &Mutex<Runner>, agent: u64) -> Result<(), String> {
         return Err("not running".into());
     };
     let mut proc = runner.procs.remove(pos);
-    proc.child.kill().map_err(|e| e.to_string())?;
+    signal_tree(proc.child.id(), libc::SIGKILL)?;
+    let _ = proc.child.wait();
     for reader in proc.readers {
         let _ = reader.join();
     }
@@ -301,6 +304,15 @@ fn spawn(
             cmd
         }
     };
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
     cmd.env("DATA_DIR", data_dir)
         .env("LAB_AGENT", agent.to_string())
         .stdout(Stdio::piped())

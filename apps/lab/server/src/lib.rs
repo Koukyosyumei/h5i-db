@@ -704,6 +704,12 @@ async fn rpc(
                     format!("{cmd:?} by role {}", actor.principal().role),
                 );
             }
+            if matches!(refusal, k::Error::Budget) {
+                app.push_alert(
+                    "budget",
+                    format!("{cmd:?} by role {}", actor.principal().role),
+                );
+            }
             let (status, body) = LabStore::encode_error(&refusal);
             reply(status, body)
         }

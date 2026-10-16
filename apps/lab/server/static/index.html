@@ -90,7 +90,7 @@ button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
   </section>
   <section class="wide">
     <h2>review</h2>
-    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>method</th><th>holdout</th><th>promoted</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>method</th><th>code</th><th>params</th><th>data</th><th>holdout</th><th>promoted</th><th></th></tr></thead><tbody></tbody></table>
     <p><input id="comment" placeholder="comment back to the agent"><button id="send">comment</button></p>
     <table id="notes"><thead><tr><th>family</th><th>decision</th><th>text</th></tr></thead><tbody></tbody></table>
   </section>
@@ -146,7 +146,7 @@ async function refresh() {
     const actions = [];
     if (f.holdout === 1 && !f.promoted && !rejected.has(f.id)) actions.push(`<button data-promote="${f.id}">promote</button>`);
     if (!f.promoted && !rejected.has(f.id)) actions.push(`<button data-reject="${f.id}">reject</button>`);
-    return `<tr><td>${f.id}</td><td>${f.hypothesis}</td><td>${f.method}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${actions.join(" ")}</td></tr>`;
+    return `<tr><td>${f.id}</td><td>${f.hypothesis}</td><td>${f.method}</td><td>${f.frozen_code}</td><td>${f.frozen_params}</td><td>${f.frozen_data}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${actions.join(" ")}</td></tr>`;
   }).join(""));
   rows(document.querySelector("#notes"), (notes.comments || []).map(c =>
     `<tr><td>${c.family}</td><td>${c.decision}</td><td>${c.text}</td></tr>`).join(""));

@@ -32,10 +32,12 @@ rejection. A promote publishes only tables the fork owns. Pins are the base
 it reads. A fork that never wrote has nothing to publish; the ledger still
 records the human's promotion.
 
-Starting an agent puts a one-day token for that agent in `LAB_TOKEN`. Pause
-and resume send `SIGSTOP` and `SIGCONT`. A review comment is visible to the
+Starting an agent puts a one-day token for that agent in `LAB_TOKEN` and
+runs it in its own process group. Pause, resume, and stop signal that
+group (`SIGSTOP`, `SIGCONT`, `SIGKILL`). A review comment is visible to the
 owning agent at `GET /api/comments`. A reject blocks promote until the
-process restarts; the block is not a ledger row.
+process restarts; the block is not a ledger row. A budget refusal is an
+alert. The review row shows the frozen code, parameters, and data version.
 
 ## Prove
 
