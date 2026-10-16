@@ -3,9 +3,12 @@
 //! One human runs many agents. The kernel is the ledger they cannot rewrite:
 //! a trial count never falls, a pre-registration does not change after it is
 //! written, a holdout is evaluated once, and only the human promotes a
-//! strategy that passed. Agents write only a family they own. The worker, not
-//! the agent, records a trial result, so a failed trial cannot be dropped by
-//! skipping the call that would have reported it.
+//! strategy that passed. A rejection is ledger state: once the human rejects
+//! a family, promote conflicts, and that decision is still there after a
+//! restart. Comments and alerts are ledger rows too. Agents write only a
+//! family they own. The worker, not the agent, records a trial result, so a
+//! failed trial cannot be dropped by skipping the call that would have
+//! reported it.
 //!
 //! Scores are non-negative integers. [`reported_score`] subtracts one for
 //! every trial after the first, so a family with more than one positive trial
@@ -29,6 +32,11 @@ pub const EFFECT_TRIAL: u64 = 1;
 pub const EFFECT_HOLDOUT: u64 = 2;
 pub const EFFECT_PROMOTE: u64 = 3;
 
+/// A review comment that does not reject the family.
+pub const MARK_NOTE: u64 = 0;
+/// The comment written by the rejection itself.
+pub const MARK_REJECT: u64 = 1;
+
 /// Who is calling. `agent` is the agent id when `role` is [`ROLE_AGENT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Principal {
@@ -48,6 +56,8 @@ h5i_app_schema::schema! {
         families: Vec<Family>,
         pendings: Vec<Pending>,
         trials: Vec<Trial>,
+        comments: Vec<Comment>,
+        alerts: Vec<Alert>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -81,6 +91,24 @@ h5i_app_schema::schema! {
         frozen_data: u64,
         holdout: u64,
         promoted: u64,
+        rejected: u64,
+    }
+
+    /// A review note. `mark` is [`MARK_NOTE`] or [`MARK_REJECT`].
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Comment in "comments" {
+        key { id: u64 }
+        family: u64,
+        mark: u64,
+        text: Vec<u8>,
+    }
+
+    /// A protocol alert. The worker writes these; they are not process memory.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Alert in "alerts" {
+        key { id: u64 }
+        kind: Vec<u8>,
+        detail: Vec<u8>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,13 +143,15 @@ pub struct Effect {
     pub id: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Write {
     SetMeta(Meta),
     PutAgent(Agent),
     PutFamily(Family),
     PutPending(Pending),
     PutTrial(Trial),
+    PutComment(Comment),
+    PutAlert(Alert),
     Emit(Effect),
 }
 
@@ -164,6 +194,21 @@ pub enum Command {
     },
     Promote {
         family: u64,
+    },
+    /// Human only. Sets [`Family::rejected`] and stores the reason.
+    Reject {
+        family: u64,
+        text: Vec<u8>,
+    },
+    /// Human only. A note that does not by itself block promotion.
+    Comment {
+        family: u64,
+        text: Vec<u8>,
+    },
+    /// Worker or human. An agent cannot file an alert.
+    NoteAlert {
+        kind: Vec<u8>,
+        detail: Vec<u8>,
     },
     Report {
         family: u64,
@@ -327,6 +372,7 @@ fn pre_register(actor: &Principal, s: &Snapshot, hypothesis: u64, method: u64) -
         frozen_data: 0,
         holdout: HOLDOUT_NONE,
         promoted: 0,
+        rejected: 0,
     };
     let meta = Meta { next_id: m.next_id + 1 };
     Ok((two(Write::PutFamily(family), Write::SetMeta(meta)), Reply::Created(id)))
@@ -461,6 +507,7 @@ fn record_trial(
                                     frozen_data: f.frozen_data,
                                     holdout: f.holdout,
                                     promoted: f.promoted,
+                                    rejected: f.rejected,
                                 };
                                 let agent = Agent {
                                     id: a.id,
@@ -524,6 +571,7 @@ fn freeze(
                     frozen_data: data_version,
                     holdout: f.holdout,
                     promoted: f.promoted,
+                    rejected: f.rejected,
                 };
                 Ok((one(Write::PutFamily(row)), Reply::Ack))
             }
@@ -556,6 +604,7 @@ fn submit_holdout(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
                     frozen_data: f.frozen_data,
                     holdout: HOLDOUT_QUEUED,
                     promoted: f.promoted,
+                    rejected: f.rejected,
                 };
                 let effect = Effect { dest: DEST_DB, kind: EFFECT_HOLDOUT, id: family };
                 Ok((two(Write::PutFamily(row), Write::Emit(effect)), Reply::Ack))
@@ -590,11 +639,131 @@ fn evaluate_holdout(actor: &Principal, s: &Snapshot, family: u64, passed: u64) -
                     frozen_data: f.frozen_data,
                     holdout: passed,
                     promoted: f.promoted,
+                    rejected: f.rejected,
                 };
                 Ok((one(Write::PutFamily(row)), Reply::Ack))
             }
         }
     }
+}
+
+fn three(a: Write, b: Write, c: Write) -> Vec<Write> {
+    let mut ws = Vec::new();
+    ws.push(a);
+    ws.push(b);
+    ws.push(c);
+    ws
+}
+
+fn alert_exists(v: &Vec<Alert>, kind: &Vec<u8>, detail: &Vec<u8>) -> bool {
+    let mut i = 0;
+    while i < v.len() {
+        if v[i].kind == *kind && v[i].detail == *detail {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Human only. A family that is already rejected stays rejected.
+fn reject(actor: &Principal, s: &Snapshot, family: u64, text: &Vec<u8>) -> Outcome {
+    if actor.role != ROLE_HUMAN {
+        return Err(Error::Forbidden);
+    }
+    if text.len() == 0 {
+        return Err(Error::Invalid);
+    }
+    match find_family(&s.families, family) {
+        None => Err(Error::NotFound),
+        Some(f) => {
+            if f.rejected == 1 {
+                Ok((Vec::new(), Reply::Ack))
+            } else if s.meta.next_id == u64::MAX {
+                Err(Error::Overflow)
+            } else {
+                let row = Family {
+                    id: f.id,
+                    agent: f.agent,
+                    task: f.task,
+                    hypothesis: f.hypothesis,
+                    method: f.method,
+                    trials: f.trials,
+                    best: f.best,
+                    frozen_code: f.frozen_code,
+                    frozen_params: f.frozen_params,
+                    frozen_data: f.frozen_data,
+                    holdout: f.holdout,
+                    promoted: f.promoted,
+                    rejected: 1,
+                };
+                let id = s.meta.next_id;
+                let note = Comment {
+                    id,
+                    family,
+                    mark: MARK_REJECT,
+                    text: text.clone(),
+                };
+                let meta = Meta { next_id: id + 1 };
+                Ok((
+                    three(Write::PutFamily(row), Write::PutComment(note), Write::SetMeta(meta)),
+                    Reply::Ack,
+                ))
+            }
+        }
+    }
+}
+
+/// Human only. Does not change [`Family::rejected`].
+fn comment(actor: &Principal, s: &Snapshot, family: u64, text: &Vec<u8>) -> Outcome {
+    if actor.role != ROLE_HUMAN {
+        return Err(Error::Forbidden);
+    }
+    if text.len() == 0 {
+        return Err(Error::Invalid);
+    }
+    match find_family(&s.families, family) {
+        None => Err(Error::NotFound),
+        Some(_) => {
+            if s.meta.next_id == u64::MAX {
+                Err(Error::Overflow)
+            } else {
+                let id = s.meta.next_id;
+                let row = Comment {
+                    id,
+                    family,
+                    mark: MARK_NOTE,
+                    text: text.clone(),
+                };
+                let meta = Meta { next_id: id + 1 };
+                Ok((two(Write::PutComment(row), Write::SetMeta(meta)), Reply::Created(id)))
+            }
+        }
+    }
+}
+
+/// Worker or human. The same kind and detail twice is one row.
+fn note_alert(actor: &Principal, s: &Snapshot, kind: &Vec<u8>, detail: &Vec<u8>) -> Outcome {
+    if actor.role != ROLE_WORKER && actor.role != ROLE_HUMAN {
+        return Err(Error::Forbidden);
+    }
+    if kind.len() == 0 {
+        return Err(Error::Invalid);
+    }
+    if alert_exists(&s.alerts, kind, detail) {
+        return Ok((Vec::new(), Reply::Ack));
+    }
+    if s.meta.next_id == u64::MAX {
+        return Err(Error::Overflow);
+    }
+    let id = s.meta.next_id;
+    let row = Alert {
+        id,
+        kind: kind.clone(),
+        detail: detail.clone(),
+    };
+    let meta = Meta { next_id: id + 1 };
+    Ok((two(Write::PutAlert(row), Write::SetMeta(meta)), Reply::Created(id)))
 }
 
 fn promote(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
@@ -604,7 +773,9 @@ fn promote(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
     match find_family(&s.families, family) {
         None => Err(Error::NotFound),
         Some(f) => {
-            if f.holdout != HOLDOUT_PASS {
+            if f.rejected != 0 {
+                Err(Error::Conflict)
+            } else if f.holdout != HOLDOUT_PASS {
                 Err(Error::Conflict)
             } else if f.promoted != 0 {
                 Err(Error::Conflict)
@@ -622,6 +793,7 @@ fn promote(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
                     frozen_data: f.frozen_data,
                     holdout: f.holdout,
                     promoted: 1,
+                    rejected: f.rejected,
                 };
                 let effect = Effect { dest: DEST_DB, kind: EFFECT_PROMOTE, id: family };
                 Ok((two(Write::PutFamily(row), Write::Emit(effect)), Reply::Ack))
@@ -683,6 +855,9 @@ pub fn transition(actor: &Principal, s: &Snapshot, cmd: &Command) -> Outcome {
         Command::SubmitHoldout { family } => submit_holdout(actor, s, *family),
         Command::EvaluateHoldout { family, passed } => evaluate_holdout(actor, s, *family, *passed),
         Command::Promote { family } => promote(actor, s, *family),
+        Command::Reject { family, text } => reject(actor, s, *family, text),
+        Command::Comment { family, text } => comment(actor, s, *family, text),
+        Command::NoteAlert { kind, detail } => note_alert(actor, s, kind, detail),
         Command::Report { family } => report(actor, s, *family),
         Command::Fleet => fleet(actor, s),
     }
@@ -695,6 +870,8 @@ fn apply_write(s: &mut Snapshot, w: Write) {
         Write::PutFamily(f) => Family::put(&mut s.families, f),
         Write::PutPending(p) => Pending::put(&mut s.pendings, p),
         Write::PutTrial(t) => Trial::put(&mut s.trials, t),
+        Write::PutComment(c) => Comment::put(&mut s.comments, c),
+        Write::PutAlert(a) => Alert::put(&mut s.alerts, a),
         Write::Emit(_) => {}
     }
 }
@@ -706,6 +883,8 @@ fn sql_write(w: &Write, out: &mut Vec<h5i_app_sql::Write>) {
         Write::PutFamily(f) => out.push(f.sql_put()),
         Write::PutPending(p) => out.push(p.sql_put()),
         Write::PutTrial(t) => out.push(t.sql_put()),
+        Write::PutComment(c) => out.push(c.sql_put()),
+        Write::PutAlert(a) => out.push(a.sql_put()),
         Write::Emit(_) => {}
     }
 }
@@ -826,6 +1005,49 @@ mod tests {
         assert_eq!(run(&s, human(), Command::Promote { family }).1, Err(Error::Conflict));
         assert_eq!(s.agents[0].fork_id, 1);
         assert_eq!(s.agents[1].fork_id, 2);
+    }
+
+    #[test]
+    fn a_rejected_strategy_cannot_be_promoted_and_only_the_human_reviews() {
+        let s = Snapshot::default();
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 1, budget: 1, token_budget: 1, sandbox: 0 });
+        let (s, r) = run(&s, agent(1), Command::PreRegister { hypothesis: 4, method: 5 });
+        let Reply::Created(family) = r.unwrap() else { panic!("family") };
+        let (s, _) = run(&s, agent(1), Command::Freeze { family, code: 8, params: 9, data_version: 10 });
+        let (s, _) = run(&s, agent(1), Command::SubmitHoldout { family });
+        let (s, _) = run(&s, worker(), Command::EvaluateHoldout { family, passed: HOLDOUT_PASS });
+        let text = b"no".to_vec();
+        assert_eq!(run(&s, agent(1), Command::Reject { family, text: text.clone() }).1, Err(Error::Forbidden));
+        assert_eq!(run(&s, worker(), Command::Reject { family, text: text.clone() }).1, Err(Error::Forbidden));
+        assert_eq!(run(&s, worker(), Command::Comment { family, text: text.clone() }).1, Err(Error::Forbidden));
+        assert_eq!(run(&s, agent(1), Command::Promote { family }).1, Err(Error::Forbidden));
+        assert_eq!(
+            run(&s, agent(1), Command::NoteAlert { kind: b"x".to_vec(), detail: b"y".to_vec() }).1,
+            Err(Error::Forbidden)
+        );
+        assert_eq!(run(&s, human(), Command::Comment { family, text: Vec::new() }).1, Err(Error::Invalid));
+        let (s, r) = run(&s, human(), Command::Reject { family, text: text.clone() });
+        assert_eq!(r, Ok(Reply::Ack));
+        assert_eq!(s.families[0].rejected, 1);
+        assert_eq!(s.families[0].promoted, 0);
+        assert_eq!(s.comments.len(), 1);
+        assert_eq!(s.comments[0].mark, MARK_REJECT);
+        assert_eq!(s.comments[0].text, b"no");
+        assert_eq!(run(&s, human(), Command::Promote { family }).1, Err(Error::Conflict));
+        let (s, r) = run(&s, human(), Command::Reject { family, text: b"again".to_vec() });
+        assert_eq!(r, Ok(Reply::Ack));
+        assert_eq!(s.comments.len(), 1);
+        assert_eq!(s.families[0].rejected, 1);
+        let (s, r) = run(&s, human(), Command::Comment { family, text: b"see".to_vec() });
+        assert_eq!(r, Ok(Reply::Created(2)));
+        assert_eq!(s.comments[1].mark, MARK_NOTE);
+        let (s, r) = run(&s, worker(), Command::NoteAlert { kind: b"budget".to_vec(), detail: b"over".to_vec() });
+        assert_eq!(r, Ok(Reply::Created(3)));
+        assert_eq!(s.alerts.len(), 1);
+        let (again, r) = run(&s, human(), Command::NoteAlert { kind: b"budget".to_vec(), detail: b"over".to_vec() });
+        assert_eq!(r, Ok(Reply::Ack));
+        assert_eq!(again.alerts.len(), 1);
+        assert_eq!(run(&s, human(), Command::Promote { family }).1, Err(Error::Conflict));
     }
 
     #[test]

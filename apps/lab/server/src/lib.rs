@@ -141,6 +141,18 @@ enum CommandJson {
     Promote {
         family: u64,
     },
+    Reject {
+        family: u64,
+        text: String,
+    },
+    Comment {
+        family: u64,
+        text: String,
+    },
+    NoteAlert {
+        kind: String,
+        detail: String,
+    },
     Report {
         family: u64,
     },
@@ -202,6 +214,18 @@ impl From<CommandJson> for k::Command {
                 k::Command::EvaluateHoldout { family, passed }
             }
             CommandJson::Promote { family } => k::Command::Promote { family },
+            CommandJson::Reject { family, text } => k::Command::Reject {
+                family,
+                text: text.into_bytes(),
+            },
+            CommandJson::Comment { family, text } => k::Command::Comment {
+                family,
+                text: text.into_bytes(),
+            },
+            CommandJson::NoteAlert { kind, detail } => k::Command::NoteAlert {
+                kind: kind.into_bytes(),
+                detail: detail.into_bytes(),
+            },
             CommandJson::Report { family } => k::Command::Report { family },
             CommandJson::Fleet => k::Command::Fleet,
         }
@@ -243,6 +267,7 @@ fn family_json(f: &k::Family) -> Out {
         ("frozen_data", f.frozen_data.into()),
         ("holdout", f.holdout.into()),
         ("promoted", f.promoted.into()),
+        ("rejected", f.rejected.into()),
     ])
 }
 
@@ -339,6 +364,7 @@ struct FamilyRow {
     frozen_data: u64,
     holdout: u64,
     promoted: u64,
+    rejected: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -410,6 +436,7 @@ impl ReplyCodec<Lab> for LabStore {
                         frozen_data: f.frozen_data,
                         holdout: f.holdout,
                         promoted: f.promoted,
+                        rejected: f.rejected,
                     })
                     .collect(),
                 trials: trials
@@ -481,6 +508,7 @@ impl ReplyCodec<Lab> for LabStore {
                             frozen_data: f.frozen_data,
                             holdout: f.holdout,
                             promoted: f.promoted,
+                            rejected: f.rejected,
                         })
                         .collect(),
                     trials: trials
@@ -503,12 +531,6 @@ impl ReplyCodec<Lab> for LabStore {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct Alert {
-    pub kind: String,
-    pub detail: String,
-}
-
 #[derive(Clone)]
 pub struct App {
     pub engine: Arc<Engine<Lab, LabStore>>,
@@ -516,7 +538,6 @@ pub struct App {
     /// HMAC secret used to mint the one-day token handed to a started agent.
     pub secret: Vec<u8>,
     pub db: Arc<h5i_db_service::Service>,
-    pub alerts: Arc<Mutex<Vec<Alert>>>,
     pub runner: Arc<Mutex<Runner>>,
     pub seal_id: String,
     pub holdout_table: String,
@@ -529,19 +550,34 @@ impl FromRef<App> for Auth<Lab> {
 }
 
 impl App {
-    pub fn push_alert(&self, kind: &str, detail: impl Into<String>) {
-        let detail = detail.into();
-        let mut alerts = self.alerts.lock().expect("alerts");
-        if alerts
-            .iter()
-            .any(|alert| alert.kind == kind && alert.detail == detail)
-        {
-            return;
+    /// Write an alert as the worker. The kernel keeps one row per kind and detail.
+    pub async fn note_alert(&self, org: u64, kind: &str, detail: &str) {
+        let kind_b = kind.as_bytes();
+        let detail_b = detail.as_bytes();
+        if let Ok(snap) = self.engine.snapshot(TenantId(org)).await {
+            if snap
+                .alerts
+                .iter()
+                .any(|row| row.kind.as_slice() == kind_b && row.detail.as_slice() == detail_b)
+            {
+                return;
+            }
         }
-        alerts.push(Alert {
-            kind: kind.into(),
-            detail,
-        });
+        let actor = k::Principal {
+            org,
+            user: 1,
+            role: k::ROLE_WORKER,
+            agent: 0,
+        };
+        let cmd = k::Command::NoteAlert {
+            kind: kind_b.to_vec(),
+            detail: detail_b.to_vec(),
+        };
+        match self.engine.execute(&actor, &cmd).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::error!(?error, "alert refused"),
+            Err(error) => tracing::error!(%error, "alert was not recorded"),
+        }
     }
 }
 
@@ -566,13 +602,6 @@ pub fn agent_ceiling_ns(snap: &k::Snapshot, agent: u64) -> Option<i64> {
         best = Some(best.map(|have| have.max(row)).unwrap_or(row));
     }
     best.and_then(|value| i64::try_from(value).ok())
-}
-
-fn family_rejected(runner: &Runner, family: u64) -> bool {
-    runner
-        .comments
-        .iter()
-        .any(|comment| comment.family == family && comment.decision == "reject")
 }
 
 /// Three or more trials with the same family, code and parameters.
@@ -681,12 +710,7 @@ async fn rpc(
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    if let k::Command::Promote { family } = &cmd {
-        if family_rejected(&app.runner.lock().expect("runner"), *family) {
-            app.push_alert("rejected", format!("promote of family {family}"));
-            return reply(StatusCode::CONFLICT, error_body("rejected"));
-        }
-    }
+    let org = actor.principal().org;
     let result = match &key {
         Some(k) => {
             app.engine
@@ -699,16 +723,20 @@ async fn rpc(
         Ok(Ok(value)) => reply(StatusCode::OK, LabStore::encode_reply(&value)),
         Ok(Err(refusal)) => {
             if matches!(refusal, k::Error::Forbidden) {
-                app.push_alert(
+                app.note_alert(
+                    org,
                     "denied",
-                    format!("{cmd:?} by role {}", actor.principal().role),
-                );
+                    &format!("{cmd:?} by role {}", actor.principal().role),
+                )
+                .await;
             }
             if matches!(refusal, k::Error::Budget) {
-                app.push_alert(
+                app.note_alert(
+                    org,
                     "budget",
-                    format!("{cmd:?} by role {}", actor.principal().role),
-                );
+                    &format!("{cmd:?} by role {}", actor.principal().role),
+                )
+                .await;
             }
             let (status, body) = LabStore::encode_error(&refusal);
             reply(status, body)
@@ -740,7 +768,8 @@ async fn query(
         && principal.role != k::ROLE_WORKER
         && principal.role != k::ROLE_HUMAN
     {
-        app.push_alert("denied", "query from an unknown role");
+        app.note_alert(principal.org, "denied", "query from an unknown role")
+            .await;
         return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
     }
     // An agent is pinned to its own fork and to the latest decision time it
@@ -756,23 +785,27 @@ async fn query(
             }
         };
         let Some(ceiling) = agent_ceiling_ns(&snap, principal.agent) else {
-            app.push_alert(
+            app.note_alert(
+                principal.org,
                 "lookahead",
-                format!(
+                &format!(
                     "agent {} queried before registering a decision time",
                     principal.agent
                 ),
-            );
+            )
+            .await;
             return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
         };
         if body.decision_time_ns > ceiling {
-            app.push_alert(
+            app.note_alert(
+                principal.org,
                 "lookahead",
-                format!(
+                &format!(
                     "agent {} asked for {} past ceiling {ceiling}",
                     principal.agent, body.decision_time_ns
                 ),
-            );
+            )
+            .await;
             return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
         }
         (Some(format!("a-{}", principal.agent)), Some(ceiling))
@@ -782,7 +815,8 @@ async fn query(
     let handle = match app.db.handle(fork.as_deref(), ceiling).await {
         Ok(handle) => handle,
         Err(error) => {
-            app.push_alert("denied", error.to_string());
+            app.note_alert(principal.org, "denied", &error.to_string())
+                .await;
             return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
         }
     };
@@ -817,24 +851,35 @@ async fn query(
             } else {
                 "query"
             };
-            app.push_alert(kind, error.to_string());
+            app.note_alert(principal.org, kind, &error.to_string())
+                .await;
             reply(StatusCode::FORBIDDEN, error_body(error.code()))
         }
     }
 }
 
 async fn alerts(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
-    if let Ok(snap) = app.engine.snapshot(TenantId(actor.principal().org)).await {
-        for detail in burst_details(&snap.trials) {
-            app.push_alert("duplicate", detail);
+    let org = actor.principal().org;
+    let snap = match app.engine.snapshot(TenantId(org)).await {
+        Ok(snap) => snap,
+        Err(error) => {
+            return reply(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error_body(&error.to_string()),
+            );
         }
+    };
+    for detail in burst_details(&snap.trials) {
+        app.note_alert(org, "duplicate", &detail).await;
     }
     for row in activity(&app.runner) {
         if looks_looping(&row.output) {
-            app.push_alert(
+            app.note_alert(
+                org,
                 "looping",
-                format!("agent {} is repeating itself", row.agent),
-            );
+                &format!("agent {} is repeating itself", row.agent),
+            )
+            .await;
         }
         if looks_stalled(
             row.running && !row.paused,
@@ -842,10 +887,33 @@ async fn alerts(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Re
             row.elapsed,
             std::time::Duration::from_secs(30),
         ) {
-            app.push_alert("stalled", format!("agent {} has no output", row.agent));
+            app.note_alert(
+                org,
+                "stalled",
+                &format!("agent {} has no output", row.agent),
+            )
+            .await;
         }
     }
-    let rows = app.alerts.lock().expect("alerts").clone();
+    let snap = match app.engine.snapshot(TenantId(org)).await {
+        Ok(snap) => snap,
+        Err(error) => {
+            return reply(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error_body(&error.to_string()),
+            );
+        }
+    };
+    let rows: Vec<serde_json::Value> = snap
+        .alerts
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "kind": String::from_utf8_lossy(&row.kind),
+                "detail": String::from_utf8_lossy(&row.detail),
+            })
+        })
+        .collect();
     let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
     reply(StatusCode::OK, Out::obj([("alerts", Out::str(&body))]))
 }
@@ -1004,57 +1072,74 @@ async fn comment(
     if actor.principal().role != k::ROLE_HUMAN {
         return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
     }
-    let decision = match body.decision.as_deref() {
-        None | Some("note") => "note",
-        Some("reject") => "reject",
+    let text = body.text.into_bytes();
+    let cmd = match body.decision.as_deref() {
+        None | Some("note") => k::Command::Comment {
+            family: body.family,
+            text,
+        },
+        Some("reject") => k::Command::Reject {
+            family: body.family,
+            text,
+        },
         Some(_) => return reply(StatusCode::UNPROCESSABLE_ENTITY, error_body("invalid")),
     };
-    app.runner
-        .lock()
-        .expect("runner")
-        .comments
-        .push(runner::Comment {
-            family: body.family,
-            text: body.text,
-            decision: decision.into(),
-        });
-    reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))]))
+    match app.engine.execute(actor.principal(), &cmd).await {
+        Ok(Ok(_)) => reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))])),
+        Ok(Err(refusal)) => {
+            let (status, body) = LabStore::encode_error(&refusal);
+            reply(status, body)
+        }
+        Err(error) => {
+            tracing::error!(%error, "review was not recorded");
+            reply(StatusCode::SERVICE_UNAVAILABLE, error_body("unavailable"))
+        }
+    }
+}
+
+fn mark_name(mark: u64) -> &'static str {
+    if mark == k::MARK_REJECT {
+        "reject"
+    } else {
+        "note"
+    }
 }
 
 async fn comments(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
     let principal = actor.principal();
-    let stored = app.runner.lock().expect("runner").comments.clone();
-    let visible = if principal.role == k::ROLE_AGENT {
-        let snap = match app.engine.snapshot(TenantId(principal.org)).await {
-            Ok(snap) => snap,
-            Err(error) => {
-                return reply(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    error_body(&error.to_string()),
-                );
-            }
-        };
+    let snap = match app.engine.snapshot(TenantId(principal.org)).await {
+        Ok(snap) => snap,
+        Err(error) => {
+            return reply(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error_body(&error.to_string()),
+            );
+        }
+    };
+    let visible: Vec<&k::Comment> = if principal.role == k::ROLE_AGENT {
         let owned: Vec<u64> = snap
             .families
             .iter()
             .filter(|family| family.agent == principal.agent)
             .map(|family| family.id)
             .collect();
-        stored
-            .into_iter()
+        snap.comments
+            .iter()
             .filter(|comment| owned.contains(&comment.family))
-            .collect::<Vec<_>>()
+            .collect()
     } else {
-        stored
+        snap.comments.iter().collect()
     };
     let body = Out::Arr(
         visible
             .iter()
             .map(|comment| {
+                let text = String::from_utf8_lossy(&comment.text).into_owned();
                 Out::obj([
+                    ("id", comment.id.into()),
                     ("family", comment.family.into()),
-                    ("decision", Out::str(&comment.decision)),
-                    ("text", Out::str(&comment.text)),
+                    ("decision", Out::str(mark_name(comment.mark))),
+                    ("text", Out::str(&text)),
                 ])
             })
             .collect(),
@@ -1081,7 +1166,6 @@ impl Deliver<()> for EffectDeliver {
         DbWorker {
             engine: Arc::clone(&self.app.engine),
             db: Arc::clone(&self.app.db),
-            alerts: Arc::clone(&self.app.alerts),
             seal_id: self.app.seal_id.clone(),
             holdout_table: self.app.holdout_table.clone(),
         }

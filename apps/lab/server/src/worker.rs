@@ -5,7 +5,7 @@
 //! not open the holdout a second time.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use h5i_app_core::TenantId;
 use h5i_app_pg::Engine;
@@ -17,12 +17,11 @@ use h5i_db_service::{
 };
 use lab_kernel as k;
 
-use crate::{Alert, Lab, LabStore};
+use crate::{Lab, LabStore};
 
 pub struct DbWorker {
     pub engine: Arc<Engine<Lab, LabStore>>,
     pub db: Arc<Service>,
-    pub alerts: Arc<Mutex<Vec<Alert>>>,
     pub seal_id: String,
     pub holdout_table: String,
 }
@@ -53,11 +52,30 @@ fn agent_has_work(snap: &k::Snapshot, agent: u64) -> bool {
         })
 }
 
-fn alert(alerts: &Mutex<Vec<Alert>>, kind: &str, detail: impl Into<String>) {
-    alerts.lock().expect("alerts").push(Alert {
-        kind: kind.into(),
-        detail: detail.into(),
-    });
+impl DbWorker {
+    /// Record an alert in the ledger. A repeat of the same kind and detail is one row.
+    async fn note(&self, org: u64, kind: &str, detail: &str) {
+        let kind_b = kind.as_bytes();
+        let detail_b = detail.as_bytes();
+        if let Ok(snap) = self.engine.snapshot(TenantId(org)).await {
+            if snap
+                .alerts
+                .iter()
+                .any(|row| row.kind.as_slice() == kind_b && row.detail.as_slice() == detail_b)
+            {
+                return;
+            }
+        }
+        let cmd = k::Command::NoteAlert {
+            kind: kind_b.to_vec(),
+            detail: detail_b.to_vec(),
+        };
+        match self.engine.execute(&worker(org), &cmd).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::error!(?error, "alert refused"),
+            Err(error) => tracing::error!(%error, "alert was not recorded"),
+        }
+    }
 }
 
 /// Project the ledger onto the database document.
@@ -324,7 +342,7 @@ impl DbWorker {
             // catalog, and leaving the pending open would spend budget
             // without counting the attempt. Score zero still counts.
             Err(error) if error.starts_with("backtest:") => {
-                alert(&self.alerts, "backtest", error);
+                self.note(org, "backtest", &error).await;
                 0
             }
             Err(error) => return Err(error),
@@ -416,7 +434,7 @@ impl DbWorker {
         let rows = match opened {
             HoldoutCount::Rows(rows) => rows,
             HoldoutCount::Used(detail) => {
-                alert(&self.alerts, "holdout", detail.clone());
+                self.note(org, "holdout", &detail).await;
                 return Err(detail);
             }
         };
@@ -476,7 +494,7 @@ impl DbWorker {
         .await?;
         let diff = Service::reconcile(&exported, &kernel_claims(&snap, &exported, &self.seal_id));
         if !diff.agrees() {
-            alert(&self.alerts, "reconcile", format!("{diff:?}"));
+            self.note(org, "reconcile", &format!("{diff:?}")).await;
         }
         Ok(())
     }
@@ -514,6 +532,7 @@ mod tests {
             frozen_data: 1,
             holdout: k::HOLDOUT_PASS,
             promoted,
+            rejected: 0,
         }
     }
 

@@ -33,14 +33,6 @@ impl SandboxMode {
     }
 }
 
-#[derive(Clone)]
-pub struct Comment {
-    pub family: u64,
-    pub text: String,
-    /// `note` or `reject`. A reject blocks a later promote in this process.
-    pub decision: String,
-}
-
 pub struct AgentProc {
     pub agent: u64,
     pub mode: SandboxMode,
@@ -53,15 +45,11 @@ pub struct AgentProc {
 
 pub struct Runner {
     pub procs: Vec<AgentProc>,
-    pub comments: Vec<Comment>,
 }
 
 impl Runner {
     pub fn new() -> Self {
-        Runner {
-            procs: Vec::new(),
-            comments: Vec::new(),
-        }
+        Runner { procs: Vec::new() }
     }
 }
 

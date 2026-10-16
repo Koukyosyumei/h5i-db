@@ -45,7 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth: Auth(Arc::new(hmac)),
         secret,
         db,
-        alerts: Arc::new(Mutex::new(Vec::new())),
         runner: Arc::new(Mutex::new(Runner::new())),
         seal_id,
         holdout_table,

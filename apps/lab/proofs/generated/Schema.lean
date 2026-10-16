@@ -53,6 +53,17 @@ theorem u64_from_val (x : U64) : U64.Insts.H5i_app_sqlColumn.from_val (int x.val
   rw [← UScalar.bv_toNat, BitVec.ofNat_toNat]
   simp [BitVec.signExtend_eq]
 
+theorem u8vec_clone (v : alloc.vec.Vec U8) : alloc.vec.CloneVec.clone core.clone.CloneU8 v = ok v :=
+  vec_clone_eq _ v (fun _ => rfl)
+
+@[step] theorem bytes_to_val (v : alloc.vec.Vec U8) :
+    alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val v ⦃ x => x = .Bytes v ⦄ := by
+  simp [alloc.vec.VecU8.Insts.H5i_app_sqlColumn.to_val, u8vec_clone]
+
+theorem bytes_from_val (v : alloc.vec.Vec U8) :
+    alloc.vec.VecU8.Insts.H5i_app_sqlColumn.from_val (.Bytes v) = ok (some v) := by
+  simp [alloc.vec.VecU8.Insts.H5i_app_sqlColumn.from_val, u8vec_clone]
+
 @[step] theorem u64_zero : U64.Insts.H5i_app_sqlZero.zero ⦃ x => x = (0#u64 : U64) ⦄ := by
   simp [U64.Insts.H5i_app_sqlZero.zero]
 
@@ -236,9 +247,9 @@ def Agent.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Agent.tabl
 
 /-! ## `Family` (table `families`) -/
 
-/-- Columns `id`, `agent`, `task`, `hypothesis`, `method`, `trials`, `best`, `frozen_code`, `frozen_params`, `frozen_data`, `holdout`, `promoted`. -/
+/-- Columns `id`, `agent`, `task`, `hypothesis`, `method`, `trials`, `best`, `frozen_code`, `frozen_params`, `frozen_data`, `holdout`, `promoted`, `rejected`. -/
 def Family.row (x : Family) : List Val :=
-  [int x.id.val, int x.agent.val, int x.task.val, int x.hypothesis.val, int x.method.val, int x.trials.val, int x.best.val, int x.frozen_code.val, int x.frozen_params.val, int x.frozen_data.val, int x.holdout.val, int x.promoted.val]
+  [int x.id.val, int x.agent.val, int x.task.val, int x.hypothesis.val, int x.method.val, int x.trials.val, int x.best.val, int x.frozen_code.val, int x.frozen_params.val, int x.frozen_data.val, int x.holdout.val, int x.promoted.val, int x.rejected.val]
 
 def Family.table : Nat := 2
 def Family.keyLen : Nat := 1
@@ -254,6 +265,7 @@ def Family.col_frozen_params : Nat := 8
 def Family.col_frozen_data : Nat := 9
 def Family.col_holdout : Nat := 10
 def Family.col_promoted : Nat := 11
+def Family.col_rejected : Nat := 12
 
 @[simp] theorem Family.row_col_id (x : Family) :
     (Family.row x)[Family.col_id]? = some (int x.id.val) := by
@@ -303,7 +315,11 @@ def Family.col_promoted : Nat := 11
     (Family.row x)[Family.col_promoted]? = some (int x.promoted.val) := by
   simp [Family.row, Family.col_promoted]
 
-@[simp] theorem Family.row_length (x : Family) : (Family.row x).length = 12 := rfl
+@[simp] theorem Family.row_col_rejected (x : Family) :
+    (Family.row x)[Family.col_rejected]? = some (int x.rejected.val) := by
+  simp [Family.row, Family.col_rejected]
+
+@[simp] theorem Family.row_length (x : Family) : (Family.row x).length = 13 := rfl
 
 @[step] theorem Family.to_row_spec (x : Family) : Family.to_row x ⦃ v => v.val = Family.row x ⦄ := by
   have := usize_max_le
@@ -379,13 +395,218 @@ def Family.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Family.ta
       (l.filter (fun y => !decide ((Family.row y)[col]? = some val))).map Family.row := by
   rw [List.filter_map]; rfl
 
+/-! ## `Comment` (table `comments`) -/
+
+/-- Columns `id`, `family`, `mark`, `text`. -/
+def Comment.row (x : Comment) : List Val :=
+  [int x.id.val, int x.family.val, int x.mark.val, .Bytes x.text]
+
+def Comment.table : Nat := 3
+def Comment.keyLen : Nat := 1
+def Comment.col_id : Nat := 0
+def Comment.col_family : Nat := 1
+def Comment.col_mark : Nat := 2
+def Comment.col_text : Nat := 3
+
+@[simp] theorem Comment.row_col_id (x : Comment) :
+    (Comment.row x)[Comment.col_id]? = some (int x.id.val) := by
+  simp [Comment.row, Comment.col_id]
+
+@[simp] theorem Comment.row_col_family (x : Comment) :
+    (Comment.row x)[Comment.col_family]? = some (int x.family.val) := by
+  simp [Comment.row, Comment.col_family]
+
+@[simp] theorem Comment.row_col_mark (x : Comment) :
+    (Comment.row x)[Comment.col_mark]? = some (int x.mark.val) := by
+  simp [Comment.row, Comment.col_mark]
+
+@[simp] theorem Comment.row_col_text (x : Comment) :
+    (Comment.row x)[Comment.col_text]? = some (.Bytes x.text) := by
+  simp [Comment.row, Comment.col_text]
+
+@[simp] theorem Comment.row_length (x : Comment) : (Comment.row x).length = 4 := rfl
+
+@[step] theorem Comment.to_row_spec (x : Comment) : Comment.to_row x ⦃ v => v.val = Comment.row x ⦄ := by
+  have := usize_max_le
+  unfold Comment.to_row; step* <;> simp_all [Comment.row] <;> scalar_tac
+
+theorem Comment.row_inj : Function.Injective Comment.row := by
+  intro a b h; cases a; cases b; simp_all [Comment.row]
+
+theorem Comment.clone_eq (x : Comment) : Comment.Insts.CoreCloneClone.clone x = ok x := by
+  simp [Comment.Insts.CoreCloneClone.clone, u8vec_clone, lift]
+
+@[step] theorem Comment.clone_spec (x : Comment) : Comment.Insts.CoreCloneClone.clone x ⦃ y => y = x ⦄ := by
+  rw [Comment.clone_eq]; simp
+
+def Comment.putA (x : Comment) : AWrite Val := .put Comment.table Comment.keyLen (Comment.row x)
+
+@[step] theorem Comment.sql_put_spec (x : Comment) : Comment.sql_put x ⦃ w => sqlW w = Comment.putA x ⦄ := by
+  unfold Comment.sql_put; step*; simp_all [sqlW, Comment.putA, Comment.table, Comment.keyLen, Comment.TABLE, Comment.KEY_LEN]
+
+/-- Insert, or replace the row with the same key. -/
+@[step] theorem Comment.put_spec (v : alloc.vec.Vec Comment) (x : Comment) (h : v.length < Usize.max) :
+    Comment.put v x ⦃ v' => v'.val = upsert (fun y => y.id) x v.val ⦄ := by
+  unfold Comment.put Comment.put_loop
+  apply WP.spec_mono (loop_search v.val (fun q => decide (q.id = x.id))
+    (fun y : alloc.vec.Vec Comment => y.val) (fun j _ => v.val.set j x) (v.val ++ [x]) _ ?_ 0#usize (by simp))
+  · intro r hr; rw [hr, show ((0#usize : Usize) : Nat) = 0 from rfl]
+    exact upsert_loop_result (fun y => y.id) x _ 0 (Nat.zero_le _) (by simp)
+  · intro j hj; unfold Comment.put_loop.body; h5i_step
+
+/-- The rows without this key. -/
+@[step] theorem Comment.del_spec (v : alloc.vec.Vec Comment) (id : U64) :
+    Comment.del v id ⦃ v' => v'.val = v.val.filter (fun y => ¬(y.id = id)) ⦄ := by
+  unfold Comment.del Comment.del_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Comment => w.val)
+    (fun acc y => if decide ¬(y.id = id) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Comment.del_loop.body v id x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Comment.del_loop.body; h5i_step
+
+/-- The rows whose column `col` does not hold `val`. -/
+@[step] theorem Comment.del_where_spec (v : alloc.vec.Vec Comment) (col : U32) (val : Val) :
+    Comment.del_where v col val ⦃ v' => v'.val = v.val.filter (fun y => ¬((Comment.row y)[col.val]? = some val)) ⦄ := by
+  unfold Comment.del_where Comment.del_where_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Comment => w.val)
+    (fun acc y => if decide ¬((Comment.row y)[col.val]? = some val) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Comment.del_where_loop.body v col val x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Comment.del_where_loop.body; h5i_step
+
+def Comment.delA (id : U64) : AWrite Val := .del Comment.table [int id.val]
+def Comment.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Comment.table col val
+
+@[step] theorem Comment.sql_del_spec (id : U64) : Comment.sql_del id ⦃ w => sqlW w = Comment.delA id ⦄ := by
+  unfold Comment.sql_del; step* <;> simp_all [sqlW, Comment.delA, Comment.table, Comment.TABLE] <;> scalar_tac
+
+@[step] theorem Comment.sql_del_where_spec (col : U32) (val : Val) :
+    Comment.sql_del_where col val ⦃ w => sqlW w = Comment.delWhereA col.val val ⦄ := by
+  unfold Comment.sql_del_where; simp [sqlW, Comment.delWhereA, Comment.table, Comment.TABLE]
+
+/-! Row writes on the encoding match the list operations. -/
+
+@[simp] theorem Comment.map_put (x : Comment) (l : List Comment) :
+    upsert (·.take 1) (Comment.row x) (l.map Comment.row) = (upsert (fun y => y.id) x l).map Comment.row :=
+  map_upsert _ _ _ _ _ (fun y => by simp [Comment.row])
+
+@[simp] theorem Comment.map_del (id : U64) (l : List Comment) :
+    (l.map Comment.row).filter (fun r => !decide (r.take 1 = [int id.val])) =
+      (l.filter (fun y => !decide (y.id = id))).map Comment.row :=
+  map_filter_of _ _ _ _ (fun y => by simp [Comment.row])
+
+@[simp] theorem Comment.map_del_where (col : Nat) (val : Val) (l : List Comment) :
+    (l.map Comment.row).filter (fun r => !decide (r[col]? = some val)) =
+      (l.filter (fun y => !decide ((Comment.row y)[col]? = some val))).map Comment.row := by
+  rw [List.filter_map]; rfl
+
+/-! ## `Alert` (table `alerts`) -/
+
+/-- Columns `id`, `kind`, `detail`. -/
+def Alert.row (x : Alert) : List Val :=
+  [int x.id.val, .Bytes x.kind, .Bytes x.detail]
+
+def Alert.table : Nat := 4
+def Alert.keyLen : Nat := 1
+def Alert.col_id : Nat := 0
+def Alert.col_kind : Nat := 1
+def Alert.col_detail : Nat := 2
+
+@[simp] theorem Alert.row_col_id (x : Alert) :
+    (Alert.row x)[Alert.col_id]? = some (int x.id.val) := by
+  simp [Alert.row, Alert.col_id]
+
+@[simp] theorem Alert.row_col_kind (x : Alert) :
+    (Alert.row x)[Alert.col_kind]? = some (.Bytes x.kind) := by
+  simp [Alert.row, Alert.col_kind]
+
+@[simp] theorem Alert.row_col_detail (x : Alert) :
+    (Alert.row x)[Alert.col_detail]? = some (.Bytes x.detail) := by
+  simp [Alert.row, Alert.col_detail]
+
+@[simp] theorem Alert.row_length (x : Alert) : (Alert.row x).length = 3 := rfl
+
+@[step] theorem Alert.to_row_spec (x : Alert) : Alert.to_row x ⦃ v => v.val = Alert.row x ⦄ := by
+  have := usize_max_le
+  unfold Alert.to_row; step* <;> simp_all [Alert.row] <;> scalar_tac
+
+theorem Alert.row_inj : Function.Injective Alert.row := by
+  intro a b h; cases a; cases b; simp_all [Alert.row]
+
+theorem Alert.clone_eq (x : Alert) : Alert.Insts.CoreCloneClone.clone x = ok x := by
+  simp [Alert.Insts.CoreCloneClone.clone, u8vec_clone, lift]
+
+@[step] theorem Alert.clone_spec (x : Alert) : Alert.Insts.CoreCloneClone.clone x ⦃ y => y = x ⦄ := by
+  rw [Alert.clone_eq]; simp
+
+def Alert.putA (x : Alert) : AWrite Val := .put Alert.table Alert.keyLen (Alert.row x)
+
+@[step] theorem Alert.sql_put_spec (x : Alert) : Alert.sql_put x ⦃ w => sqlW w = Alert.putA x ⦄ := by
+  unfold Alert.sql_put; step*; simp_all [sqlW, Alert.putA, Alert.table, Alert.keyLen, Alert.TABLE, Alert.KEY_LEN]
+
+/-- Insert, or replace the row with the same key. -/
+@[step] theorem Alert.put_spec (v : alloc.vec.Vec Alert) (x : Alert) (h : v.length < Usize.max) :
+    Alert.put v x ⦃ v' => v'.val = upsert (fun y => y.id) x v.val ⦄ := by
+  unfold Alert.put Alert.put_loop
+  apply WP.spec_mono (loop_search v.val (fun q => decide (q.id = x.id))
+    (fun y : alloc.vec.Vec Alert => y.val) (fun j _ => v.val.set j x) (v.val ++ [x]) _ ?_ 0#usize (by simp))
+  · intro r hr; rw [hr, show ((0#usize : Usize) : Nat) = 0 from rfl]
+    exact upsert_loop_result (fun y => y.id) x _ 0 (Nat.zero_le _) (by simp)
+  · intro j hj; unfold Alert.put_loop.body; h5i_step
+
+/-- The rows without this key. -/
+@[step] theorem Alert.del_spec (v : alloc.vec.Vec Alert) (id : U64) :
+    Alert.del v id ⦃ v' => v'.val = v.val.filter (fun y => ¬(y.id = id)) ⦄ := by
+  unfold Alert.del Alert.del_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Alert => w.val)
+    (fun acc y => if decide ¬(y.id = id) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Alert.del_loop.body v id x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Alert.del_loop.body; h5i_step
+
+/-- The rows whose column `col` does not hold `val`. -/
+@[step] theorem Alert.del_where_spec (v : alloc.vec.Vec Alert) (col : U32) (val : Val) :
+    Alert.del_where v col val ⦃ v' => v'.val = v.val.filter (fun y => ¬((Alert.row y)[col.val]? = some val)) ⦄ := by
+  unfold Alert.del_where Alert.del_where_loop
+  apply WP.spec_mono (loop_fold v.val (fun w : alloc.vec.Vec Alert => w.val)
+    (fun acc y => if decide ¬((Alert.row y)[col.val]? = some val) then acc ++ [y] else acc)
+    (fun w j => w.length ≤ j) (fun x => Alert.del_where_loop.body v col val x.1 x.2) ?_ _ 0#usize (by simp) (by simp))
+  · intro r hr; rw [hr, foldl_filter]; simp
+  · intro o j hj ho; have := v.len_ineq; unfold Alert.del_where_loop.body; h5i_step
+
+def Alert.delA (id : U64) : AWrite Val := .del Alert.table [int id.val]
+def Alert.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Alert.table col val
+
+@[step] theorem Alert.sql_del_spec (id : U64) : Alert.sql_del id ⦃ w => sqlW w = Alert.delA id ⦄ := by
+  unfold Alert.sql_del; step* <;> simp_all [sqlW, Alert.delA, Alert.table, Alert.TABLE] <;> scalar_tac
+
+@[step] theorem Alert.sql_del_where_spec (col : U32) (val : Val) :
+    Alert.sql_del_where col val ⦃ w => sqlW w = Alert.delWhereA col.val val ⦄ := by
+  unfold Alert.sql_del_where; simp [sqlW, Alert.delWhereA, Alert.table, Alert.TABLE]
+
+/-! Row writes on the encoding match the list operations. -/
+
+@[simp] theorem Alert.map_put (x : Alert) (l : List Alert) :
+    upsert (·.take 1) (Alert.row x) (l.map Alert.row) = (upsert (fun y => y.id) x l).map Alert.row :=
+  map_upsert _ _ _ _ _ (fun y => by simp [Alert.row])
+
+@[simp] theorem Alert.map_del (id : U64) (l : List Alert) :
+    (l.map Alert.row).filter (fun r => !decide (r.take 1 = [int id.val])) =
+      (l.filter (fun y => !decide (y.id = id))).map Alert.row :=
+  map_filter_of _ _ _ _ (fun y => by simp [Alert.row])
+
+@[simp] theorem Alert.map_del_where (col : Nat) (val : Val) (l : List Alert) :
+    (l.map Alert.row).filter (fun r => !decide (r[col]? = some val)) =
+      (l.filter (fun y => !decide ((Alert.row y)[col]? = some val))).map Alert.row := by
+  rw [List.filter_map]; rfl
+
 /-! ## `Pending` (table `pendings`) -/
 
 /-- Columns `id`, `family`, `agent`, `code`, `params`, `decision_time`, `open`. -/
 def Pending.row (x : Pending) : List Val :=
   [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.decision_time.val, int x.open.val]
 
-def Pending.table : Nat := 3
+def Pending.table : Nat := 5
 def Pending.keyLen : Nat := 1
 def Pending.col_id : Nat := 0
 def Pending.col_family : Nat := 1
@@ -505,7 +726,7 @@ def Pending.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Pending.
 def Trial.row (x : Trial) : List Val :=
   [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.data_version.val, int x.decision_time.val, int x.score.val, int x.tokens.val]
 
-def Trial.table : Nat := 4
+def Trial.table : Nat := 6
 def Trial.keyLen : Nat := 1
 def Trial.col_id : Nat := 0
 def Trial.col_family : Nat := 1
@@ -635,7 +856,7 @@ def Trial.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Trial.tabl
 macro "row_tac" : tactic => `(tactic| (
   repeat (first
     | (step*; done)
-    | (simp_all only [Meta.row, Agent.row, Family.row, Pending.row, Trial.row, List.getElem_cons_zero, List.getElem_cons_succ, Nat.zero_add, Nat.reduceAdd, bind_tc_ok, u64_from_val]; step*))
+    | (simp_all only [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row, List.getElem_cons_zero, List.getElem_cons_succ, Nat.zero_add, Nat.reduceAdd, bind_tc_ok, u64_from_val, bytes_from_val]; step*))
   all_goals simp_all))
 
 theorem Meta.from_row_spec (x : Meta) (v : alloc.vec.Vec Val) (h : v.val = Meta.row x) :
@@ -650,8 +871,18 @@ theorem Agent.from_row_spec (x : Agent) (v : alloc.vec.Vec Val) (h : v.val = Age
 
 theorem Family.from_row_spec (x : Family) (v : alloc.vec.Vec Val) (h : v.val = Family.row x) :
     Family.from_row v ⦃ o => o = some x ⦄ := by
-  have hl : v.length = 12 := by simp [alloc.vec.Vec.length, h, Family.row]
+  have hl : v.length = 13 := by simp [alloc.vec.Vec.length, h, Family.row]
   unfold Family.from_row; row_tac
+
+theorem Comment.from_row_spec (x : Comment) (v : alloc.vec.Vec Val) (h : v.val = Comment.row x) :
+    Comment.from_row v ⦃ o => o = some x ⦄ := by
+  have hl : v.length = 4 := by simp [alloc.vec.Vec.length, h, Comment.row]
+  unfold Comment.from_row; row_tac
+
+theorem Alert.from_row_spec (x : Alert) (v : alloc.vec.Vec Val) (h : v.val = Alert.row x) :
+    Alert.from_row v ⦃ o => o = some x ⦄ := by
+  have hl : v.length = 3 := by simp [alloc.vec.Vec.length, h, Alert.row]
+  unfold Alert.from_row; row_tac
 
 theorem Pending.from_row_spec (x : Pending) (v : alloc.vec.Vec Val) (h : v.val = Pending.row x) :
     Pending.from_row v ⦃ o => o = some x ⦄ := by
@@ -717,6 +948,38 @@ theorem Family.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : Li
   step with hl
   simp [ok1_post, l_post]
 
+theorem Comment.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Comment)
+    (h : rows.val.map (·.val) = l.map Comment.row) :
+    Comment.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
+  have e : Comment.from_rows_loop rows (alloc.vec.Vec.new Comment) true 0#usize =
+      loop (fun x => rowsBody Comment.from_row rows x.1 x.2.1 x.2.2) (alloc.vec.Vec.new Comment, true, 0#usize) := by
+    unfold Comment.from_rows_loop; congr 1; funext ⟨a, b, c⟩
+    simp only []; unfold Comment.from_rows_loop.body rowsBody
+    dsimp only
+    split <;> (try rfl)
+    congr 1; funext v; congr 1; funext o; cases o <;> rfl
+  have hl : Comment.from_rows_loop rows (alloc.vec.Vec.new Comment) true 0#usize ⦃ r => r.2 = true ∧ r.1.val = l ⦄ := by
+    rw [e]; exact rows_loop Comment.from_row Comment.row (fun x v hv => Comment.from_row_spec x v hv) rows l h
+  unfold Comment.from_rows
+  step with hl
+  simp [ok1_post, l_post]
+
+theorem Alert.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Alert)
+    (h : rows.val.map (·.val) = l.map Alert.row) :
+    Alert.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
+  have e : Alert.from_rows_loop rows (alloc.vec.Vec.new Alert) true 0#usize =
+      loop (fun x => rowsBody Alert.from_row rows x.1 x.2.1 x.2.2) (alloc.vec.Vec.new Alert, true, 0#usize) := by
+    unfold Alert.from_rows_loop; congr 1; funext ⟨a, b, c⟩
+    simp only []; unfold Alert.from_rows_loop.body rowsBody
+    dsimp only
+    split <;> (try rfl)
+    congr 1; funext v; congr 1; funext o; cases o <;> rfl
+  have hl : Alert.from_rows_loop rows (alloc.vec.Vec.new Alert) true 0#usize ⦃ r => r.2 = true ∧ r.1.val = l ⦄ := by
+    rw [e]; exact rows_loop Alert.from_row Alert.row (fun x v hv => Alert.from_row_spec x v hv) rows l h
+  unfold Alert.from_rows
+  step with hl
+  simp [ok1_post, l_post]
+
 theorem Pending.from_rows_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Pending)
     (h : rows.val.map (·.val) = l.map Pending.row) :
     Pending.from_rows rows ⦃ o => ∃ v, o = some v ∧ v.val = l ⦄ := by
@@ -758,6 +1021,8 @@ def kl : Nat → Nat
   | 2 => 1
   | 3 => 1
   | 4 => 1
+  | 5 => 1
+  | 6 => 1
   | _ => 0
 
 @[simp] theorem kl_0 : kl 0 = 0 := rfl
@@ -765,32 +1030,36 @@ def kl : Nat → Nat
 @[simp] theorem kl_2 : kl 2 = 1 := rfl
 @[simp] theorem kl_3 : kl 3 = 1 := rfl
 @[simp] theorem kl_4 : kl 4 = 1 := rfl
+@[simp] theorem kl_5 : kl 5 = 1 := rfl
+@[simp] theorem kl_6 : kl 6 = 1 := rfl
 
 /-- `row` encodes a value of table `t`'s row type. -/
 def IsRow : Nat → List Val → Prop
   | 0 => fun r => ∃ x : Meta, r = Meta.row x
   | 1 => fun r => ∃ x : Agent, r = Agent.row x
   | 2 => fun r => ∃ x : Family, r = Family.row x
-  | 3 => fun r => ∃ x : Pending, r = Pending.row x
-  | 4 => fun r => ∃ x : Trial, r = Trial.row x
+  | 3 => fun r => ∃ x : Comment, r = Comment.row x
+  | 4 => fun r => ∃ x : Alert, r = Alert.row x
+  | 5 => fun r => ∃ x : Pending, r = Pending.row x
+  | 6 => fun r => ∃ x : Trial, r = Trial.row x
   | _ => fun _ => False
 
 /-- Split a goal about table `t` into one goal per table. -/
-macro "cases_table " t:ident : tactic => `(tactic| rcases $t:ident with _ | _ | _ | _ | _ | $t:ident)
+macro "cases_table " t:ident : tactic => `(tactic| rcases $t:ident with _ | _ | _ | _ | _ | _ | _ | $t:ident)
 
 /-- A write's table writes map a state's encoding to the next: `schema_step [enc, sqlA, applyWrite]`. -/
 macro "schema_step" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
   intro s w; funext t
   cases w <;> cases_table t <;>
-    simp [applyAllW, applyW, upsert, Meta.putA, Meta.table, Meta.keyLen, Meta.row, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*] <;>
+    simp [applyAllW, applyW, upsert, Meta.putA, Meta.table, Meta.keyLen, Meta.row, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*] <;>
     first
-      | exact map_filter_of _ _ _ _ (fun y => by simp [Meta.row, Agent.row, Family.row, Pending.row, Trial.row])
-      | (congr 1; exact List.filter_congr (fun y _ => by simp [Meta.row, Agent.row, Family.row, Pending.row, Trial.row]))))
+      | exact map_filter_of _ _ _ _ (fun y => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row])
+      | (congr 1; exact List.filter_congr (fun y _ => by simp [Meta.row, Agent.row, Family.row, Comment.row, Alert.row, Pending.row, Trial.row]))))
 
 /-- Every table write is well formed: `schema_ok [sqlA]`. -/
 macro "schema_ok" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
   intro w; cases w <;>
-    simp [WriteOk, RowOk, IsRow, Meta.putA, Meta.table, Meta.keyLen, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*]))
+    simp [WriteOk, RowOk, IsRow, Meta.putA, Meta.table, Meta.keyLen, Agent.putA, Agent.table, Agent.keyLen, Agent.delA, Agent.delWhereA, Family.putA, Family.table, Family.keyLen, Family.delA, Family.delWhereA, Comment.putA, Comment.table, Comment.keyLen, Comment.delA, Comment.delWhereA, Alert.putA, Alert.table, Alert.keyLen, Alert.delA, Alert.delWhereA, Pending.putA, Pending.table, Pending.keyLen, Pending.delA, Pending.delWhereA, Trial.putA, Trial.table, Trial.keyLen, Trial.delA, Trial.delWhereA, $ls,*]))
 
 /-- A fresh tenant's tables: `schema_init [enc, init]`. -/
 macro "schema_init" " [" ls:Lean.Parser.Tactic.simpLemma,* "]" : tactic => `(tactic| (
@@ -807,21 +1076,25 @@ def Snapshot.enc (s : Snapshot) : Tables Val
   | 0 => [Meta.row s.meta]
   | 1 => s.agents.val.map Agent.row
   | 2 => s.families.val.map Family.row
-  | 3 => s.pendings.val.map Pending.row
-  | 4 => s.trials.val.map Trial.row
+  | 3 => s.comments.val.map Comment.row
+  | 4 => s.alerts.val.map Alert.row
+  | 5 => s.pendings.val.map Pending.row
+  | 6 => s.trials.val.map Trial.row
   | _ => []
 
 /-- A fresh tenant's snapshot. -/
 def Snapshot.empty : Snapshot :=
-  { meta := Meta.zero, agents := alloc.vec.Vec.new Agent, families := alloc.vec.Vec.new Family, pendings := alloc.vec.Vec.new Pending, trials := alloc.vec.Vec.new Trial }
+  { meta := Meta.zero, agents := alloc.vec.Vec.new Agent, families := alloc.vec.Vec.new Family, pendings := alloc.vec.Vec.new Pending, trials := alloc.vec.Vec.new Trial, comments := alloc.vec.Vec.new Comment, alerts := alloc.vec.Vec.new Alert }
 
 /-- Stored rows, table by table. -/
 def Rows.tabs (r : Rows) : Tables Val
   | 0 => r.meta.val.map (·.val)
   | 1 => r.agents.val.map (·.val)
   | 2 => r.families.val.map (·.val)
-  | 3 => r.pendings.val.map (·.val)
-  | 4 => r.trials.val.map (·.val)
+  | 3 => r.comments.val.map (·.val)
+  | 4 => r.alerts.val.map (·.val)
+  | 5 => r.pendings.val.map (·.val)
+  | 6 => r.trials.val.map (·.val)
   | _ => []
 
 theorem Snapshot.clone_eq (s : Snapshot) : Snapshot.Insts.CoreCloneClone.clone s = ok s := by
@@ -830,13 +1103,15 @@ theorem Snapshot.clone_eq (s : Snapshot) : Snapshot.Insts.CoreCloneClone.clone s
     vec_clone_eq Agent.Insts.CoreCloneClone s.agents Agent.clone_eq,
     vec_clone_eq Family.Insts.CoreCloneClone s.families Family.clone_eq,
     vec_clone_eq Pending.Insts.CoreCloneClone s.pendings Pending.clone_eq,
-    vec_clone_eq Trial.Insts.CoreCloneClone s.trials Trial.clone_eq]
+    vec_clone_eq Trial.Insts.CoreCloneClone s.trials Trial.clone_eq,
+    vec_clone_eq Comment.Insts.CoreCloneClone s.comments Comment.clone_eq,
+    vec_clone_eq Alert.Insts.CoreCloneClone s.alerts Alert.clone_eq]
 
 /-- `decode` reads back tables `E` up to row order (an empty singleton table reads as its fresh row). -/
 theorem decode_spec (r : Rows) (E : Tables Val)
     (hrow : ∀ t, ∀ row ∈ E t, IsRow t row)
     (hone0 : (E 0).length = 1)
-    (hnil : ∀ t, 5 ≤ t → E t = [])
+    (hnil : ∀ t, 7 ≤ t → E t = [])
     (hR : ∀ t, (Rows.tabs r t).Perm (E t) ∨ (Rows.tabs r t = [] ∧ E t = Snapshot.enc Snapshot.empty t)) :
     decode r ⦃ o => ∃ s, o = some s ∧ ∀ t, (Snapshot.enc s t).Perm (E t) ⦄ := by
   obtain ⟨l0, n0, e0, f0⟩ := one_row Meta.row Meta.zero (Rows.tabs r 0) (E 0) hone0 (hrow 0) (hR 0)
@@ -844,10 +1119,14 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   obtain ⟨l1, e1⟩ := exists_map Agent.row (Rows.tabs r 1) (fun row h => hrow 1 row (h1.subset h))
   have h2 : (Rows.tabs r 2).Perm (E 2) := keyed_perm (hR 2)
   obtain ⟨l2, e2⟩ := exists_map Family.row (Rows.tabs r 2) (fun row h => hrow 2 row (h2.subset h))
+  have h5 : (Rows.tabs r 5).Perm (E 5) := keyed_perm (hR 5)
+  obtain ⟨l5, e5⟩ := exists_map Pending.row (Rows.tabs r 5) (fun row h => hrow 5 row (h5.subset h))
+  have h6 : (Rows.tabs r 6).Perm (E 6) := keyed_perm (hR 6)
+  obtain ⟨l6, e6⟩ := exists_map Trial.row (Rows.tabs r 6) (fun row h => hrow 6 row (h6.subset h))
   have h3 : (Rows.tabs r 3).Perm (E 3) := keyed_perm (hR 3)
-  obtain ⟨l3, e3⟩ := exists_map Pending.row (Rows.tabs r 3) (fun row h => hrow 3 row (h3.subset h))
+  obtain ⟨l3, e3⟩ := exists_map Comment.row (Rows.tabs r 3) (fun row h => hrow 3 row (h3.subset h))
   have h4 : (Rows.tabs r 4).Perm (E 4) := keyed_perm (hR 4)
-  obtain ⟨l4, e4⟩ := exists_map Trial.row (Rows.tabs r 4) (fun row h => hrow 4 row (h4.subset h))
+  obtain ⟨l4, e4⟩ := exists_map Alert.row (Rows.tabs r 4) (fun row h => hrow 4 row (h4.subset h))
   unfold decode
   step with Meta.from_one_spec r.meta l0 n0 e0 as ⟨ o0, h0 ⟩
   subst h0; dsimp only
@@ -855,9 +1134,13 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   subst ho1; dsimp only
   step with Family.from_rows_spec r.families l2 e2 as ⟨ o2, v2, ho2, hv2 ⟩
   subst ho2; dsimp only
-  step with Pending.from_rows_spec r.pendings l3 e3 as ⟨ o3, v3, ho3, hv3 ⟩
+  step with Pending.from_rows_spec r.pendings l5 e5 as ⟨ o5, v5, ho5, hv5 ⟩
+  subst ho5; dsimp only
+  step with Trial.from_rows_spec r.trials l6 e6 as ⟨ o6, v6, ho6, hv6 ⟩
+  subst ho6; dsimp only
+  step with Comment.from_rows_spec r.comments l3 e3 as ⟨ o3, v3, ho3, hv3 ⟩
   subst ho3; dsimp only
-  step with Trial.from_rows_spec r.trials l4 e4 as ⟨ o4, v4, ho4, hv4 ⟩
+  step with Alert.from_rows_spec r.alerts l4 e4 as ⟨ o4, v4, ho4, hv4 ⟩
   subst ho4; dsimp only
   refine ⟨_, rfl, fun t => ?_⟩
   match t with
@@ -866,10 +1149,12 @@ theorem decode_spec (r : Rows) (E : Tables Val)
   | 2 => simp only [Snapshot.enc, hv2]; rw [← e2]; exact h2
   | 3 => simp only [Snapshot.enc, hv3]; rw [← e3]; exact h3
   | 4 => simp only [Snapshot.enc, hv4]; rw [← e4]; exact h4
-  | t + 5 => simp only [Snapshot.enc, hnil (t + 5) (by omega)]; exact .refl _
+  | 5 => simp only [Snapshot.enc, hv5]; rw [← e5]; exact h5
+  | 6 => simp only [Snapshot.enc, hv6]; rw [← e6]; exact h6
+  | t + 7 => simp only [Snapshot.enc, hnil (t + 7) (by omega)]; exact .refl _
 
 /-- Rows in a snapshot's keyed tables; a write adds at most one. -/
-def Snapshot.size (s : Snapshot) : Nat := s.agents.length + s.families.length + s.pendings.length + s.trials.length
+def Snapshot.size (s : Snapshot) : Nat := s.agents.length + s.families.length + s.pendings.length + s.trials.length + s.comments.length + s.alerts.length
 
 /-! ## Loading
 
@@ -884,7 +1169,7 @@ structure Fits : Prop where
   rows : A.IsRow = IsRow
   enc : ∀ s, A.enc (toSt s) = Snapshot.enc s
   init : A.enc A.init = Snapshot.enc Snapshot.empty
-  nil : ∀ s t, 5 ≤ t → A.enc s t = []
+  nil : ∀ s t, 7 ≤ t → A.enc s t = []
 
 variable {A toSt}
 
@@ -1015,7 +1300,7 @@ variable {St : Type} (A : App St Write Val) (toSt : Snapshot → St) (ts : List 
 
 /-- Rows the compiled `SELECT` of each table returns, in any order. -/
 def Loads (db : Pg.PgDb Val) (r : Rows) : Prop :=
-  ∀ t, t < 5 → ∃ q ps R0, Pg.selectA valKind ts tv t none = some (q, ps) ∧
+  ∀ t, t < 7 → ∃ q ps R0, Pg.selectA valKind ts tv t none = some (q, ps) ∧
     Pg.selected valKind db q ps = some R0 ∧ (Rows.tabs r t).Perm R0
 
 inductive PgServed : Pg.PgDb Val → St → Prop
@@ -1034,13 +1319,13 @@ inductive PgServed : Pg.PgDb Val → St → Prop
 
 variable {A toSt ts tv Step}
 
-theorem Rows.tabs_nil (r : Rows) (t : Nat) (h : 5 ≤ t) : Rows.tabs r t = [] := by
+theorem Rows.tabs_nil (r : Rows) (t : Nat) (h : 7 ≤ t) : Rows.tabs r t = [] := by
   obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le' h
   simp only [Rows.tabs]
 
 /-- The tenant's view of a `PgServed` database is `Served`, with the same state. -/
 theorem pg_served (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : valKind tv = some .int)
-    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 5) {db : Pg.PgDb Val} {s : St}
+    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 7) {db : Pg.PgDb Val} {s : St}
     (h : PgServed A toSt ts tv Step db s) : Pg.Matches valKind ts db ∧ Served A toSt (Pg.view ts tv db) s := by
   induction h with
   | fresh hm he => exact ⟨hm, he ▸ .fresh⟩
@@ -1063,7 +1348,7 @@ theorem pg_served (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : 
 
 /-- An `Inv` kept by init, row reordering and every `Step` holds on PostgreSQL and on every load. -/
 theorem pg_loaded_inv (hs : SqlFits A) (hf : Fits A toSt) (hv : Pg.Valid ts) (htv : valKind tv = some .int)
-    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 5) (Inv : St → Prop) (hinit : Inv A.init)
+    (hkl : Pg.klOf ts = kl) (hlen : ts.length = 7) (Inv : St → Prop) (hinit : Inv A.init)
     (hequiv : ∀ snap s', A.Equiv (toSt snap) s' → Inv s' → Inv (toSt snap))
     (hstep : ∀ snap ws, Step snap ws → Inv (toSt snap) → Inv (ws.val.foldl A.step (toSt snap)))
     {db : Pg.PgDb Val} {s : St} (h : PgServed A toSt ts tv Step db s) :

@@ -34,10 +34,13 @@ records the human's promotion.
 
 Starting an agent puts a one-day token for that agent in `LAB_TOKEN` and
 runs it in its own process group. Pause, resume, and stop signal that
-group (`SIGSTOP`, `SIGCONT`, `SIGKILL`). A review comment is visible to the
-owning agent at `GET /api/comments`. A reject blocks promote until the
-process restarts; the block is not a ledger row. A budget refusal is an
-alert. The review row shows the frozen code, parameters, and data version.
+group (`SIGSTOP`, `SIGCONT`, `SIGKILL`). Review comments, rejections, and
+alerts are ledger rows (`Comment`, `Reject`, `NoteAlert`), so they are still
+there after a restart. Only the human can reject, comment, or promote. A
+rejected family stays rejected, and promote conflicts. The worker (not an
+agent) files alerts. A review comment is visible to the owning agent at
+`GET /api/comments`. The review row shows the frozen code, parameters, and
+data version.
 
 ## Prove
 

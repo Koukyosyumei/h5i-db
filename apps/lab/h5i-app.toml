@@ -13,6 +13,8 @@ theorems = [
     "lab_kernel.reported_below_raw",
     "lab_kernel.holdout_is_once",
     "lab_kernel.record_counts_the_trial",
+    "lab_kernel.rejected_never_promotes",
+    "lab_kernel.review_requires_human",
 ]
 
 # Bugs the proofs must reject (`h5i app mutate`). Each `old` occurs once.
@@ -30,3 +32,8 @@ new = "if false {"
 name = "a_trial_does_not_count"
 old = "trials: f.trials + 1,"
 new = "trials: f.trials,"
+
+[[mutant]]
+name = "promote_a_rejected_strategy"
+old = "if f.rejected != 0 {"
+new = "if false {"

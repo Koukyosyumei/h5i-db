@@ -65,6 +65,28 @@ theorem promote_requires_pass (actor : Principal) (s : Snapshot) (family : U64) 
   unfold promote
   step*
 
+/-- A successful promote read a family that had not been rejected.
+A rejected strategy therefore has no promoting execution. -/
+theorem rejected_never_promotes (actor : Principal) (s : Snapshot) (family : U64) :
+    promote actor s family ⦃ r => ∀ ws rep, r = .Ok (ws, rep) →
+      ∃ f, s.families.val.find? (fun g => g.id.val = family.val) = some f ∧
+        f.rejected = 0#u64 ⦄ := by
+  unfold promote
+  step*
+
+/-- Reject, comment, and promote are the human's. Any other role is refused
+before the ledger changes. -/
+theorem review_requires_human
+    (actor : Principal) (s : Snapshot) (family : U64) (text : alloc.vec.Vec U8)
+    (h : actor.role ≠ ROLE_HUMAN) :
+    reject actor s family text = ok (.Err .Forbidden) ∧
+    comment actor s family text = ok (.Err .Forbidden) ∧
+    promote actor s family = ok (.Err .Forbidden) := by
+  refine ⟨?_, ?_, ?_⟩
+  · unfold reject; rw [u64_bne]; simp [h]
+  · unfold comment; rw [u64_bne]; simp [h]
+  · unfold promote; rw [u64_bne]; simp [h]
+
 /-- With more than one trial and a positive best, the reported rank is strictly
 below the raw best. -/
 theorem reported_below_raw (best n : U64) (hn : 1 < n.val) (hb : 0 < best.val) :
@@ -102,12 +124,12 @@ theorem record_counts_the_trial
       id := f.id, agent := f.agent, task := f.task, hypothesis := f.hypothesis,
       method := f.method, trials := i2, best := score, frozen_code := f.frozen_code,
       frozen_params := f.frozen_params, frozen_data := f.frozen_data, holdout := f.holdout,
-      promoted := f.promoted }
+      promoted := f.promoted, rejected := f.rejected }
     let kept : Family := {
       id := f.id, agent := f.agent, task := f.task, hypothesis := f.hypothesis,
       method := f.method, trials := i2, best := f.best, frozen_code := f.frozen_code,
       frozen_params := f.frozen_params, frozen_data := f.frozen_data, holdout := f.holdout,
-      promoted := f.promoted }
+      promoted := f.promoted, rejected := f.rejected }
     first
       | (refine ⟨f, higher, hf, ?_, ?_, ?_⟩
          · simp [higher]
