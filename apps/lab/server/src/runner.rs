@@ -396,6 +396,12 @@ mod tests {
         .unwrap();
         let pid = activity(&runner)[0].pid;
         pause_agent(&runner, 7).unwrap();
+        // SIGSTOP is delivered asynchronously; a loaded host can still report
+        // the process as running for a moment after kill() returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while proc_state(pid) != "T" && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(proc_state(pid), "T");
         assert!(activity(&runner)[0].paused);
         assert!(rss_kb(pid) > 0);
