@@ -1822,18 +1822,48 @@ pub async fn read_ingest_log(db: &Database) -> Result<Vec<IngestEntry>> {
 
 // -- run outputs ------------------------------------------------------------
 
+/// The identity of one backtest, stored on `bt_trial`.
+///
+/// [`TrialStamp::unspecified`] is what a caller uses when it does not know
+/// its code. The row is still written. Nothing in [`write_run`] turns that
+/// off.
+#[derive(Clone, Debug)]
+pub struct TrialStamp {
+    pub code_identity: String,
+    pub parameters: String,
+    pub data_version: String,
+    pub decision_time_ns: Option<i64>,
+    pub scope: String,
+}
+
+impl TrialStamp {
+    pub fn unspecified() -> Self {
+        Self {
+            code_identity: "unspecified".to_string(),
+            parameters: "{}".to_string(),
+            data_version: "unspecified".to_string(),
+            decision_time_ns: None,
+            scope: "unspecified".to_string(),
+        }
+    }
+}
+
 /// Write a finished run's `bt_*` tables, atomically.
 ///
-/// The five tables are one fact -- a run -- so they are committed as one
-/// journaled transaction rather than five appends. That is a correctness fix
-/// before it is a speed one: five sequential commits means a crash between
+/// The tables are one fact -- a run -- so they are committed as one
+/// journaled transaction rather than one append each. That is a correctness
+/// fix before it is a speed one: sequential commits mean a crash between
 /// two of them leaves `bt_orders` written and `bt_fills` missing, which is a
 /// run that reads as "submitted 400 orders, filled none". A transaction
-/// leaves either all five or none.
+/// leaves either every table or none.
+///
+/// `bt_trial` is part of that fact. This entry point records it as
+/// [`TrialStamp::unspecified`]. [`write_run_with_trial`] is the same write
+/// with the caller's identity.
 ///
 /// It is also where a run's wall time was going. Each commit takes the
 /// database-wide metadata lock, writes a manifest and fsyncs, so the cost is
-/// per *commit*, not per row; five of them to store a few hundred rows was
+/// per *commit*, not per row; one commit per run table to store a few hundred rows was
 /// measurably more expensive than replaying the market data that produced
 /// them (`benches/replay_path.rs`).
 pub async fn write_run(
@@ -1843,6 +1873,28 @@ pub async fn write_run(
     result: &RunResult,
     settlement: &SettlementReport,
     started_at: UnixNanos,
+) -> Result<()> {
+    write_run_with_trial(
+        db,
+        run_id,
+        config_digest,
+        result,
+        settlement,
+        started_at,
+        &TrialStamp::unspecified(),
+    )
+    .await
+}
+
+/// [`write_run`], with the trial identity the caller actually has.
+pub async fn write_run_with_trial(
+    db: &Database,
+    run_id: &str,
+    config_digest: &str,
+    result: &RunResult,
+    settlement: &SettlementReport,
+    started_at: UnixNanos,
+    trial: &TrialStamp,
 ) -> Result<()> {
     create_run_tables(db).await?;
     // Read after create, so a database whose run tables already exist in the
@@ -1867,8 +1919,104 @@ pub async fn write_run(
             positions_batch(result, settlement, encoding)?,
         ),
         (schema::EQUITY, equity_batch(result, encoding)?),
+        (
+            schema::TRIAL,
+            trial_batch(run_id, config_digest, trial, result, settlement, started_at)?,
+        ),
     ];
     commit_run_batches(db, batches).await
+}
+
+fn trial_batch(
+    run_id: &str,
+    config_digest: &str,
+    trial: &TrialStamp,
+    result: &RunResult,
+    settlement: &SettlementReport,
+    started_at: UnixNanos,
+) -> Result<Option<RecordBatch>> {
+    let summary = serde_json::json!({
+        "final_cash": result.final_cash.raw(),
+        "realized_pnl": result.realized_pnl.raw(),
+        "commissions": result.commissions.raw(),
+        "records_processed": result.records_processed,
+        "settlement_applied": settlement.was_applied(),
+    });
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(vec![started_at.get()])),
+        Arc::new(StringArray::from(vec![run_id])),
+        Arc::new(StringArray::from(vec![config_digest])),
+        Arc::new(StringArray::from(vec![trial.code_identity.as_str()])),
+        Arc::new(StringArray::from(vec![trial.parameters.as_str()])),
+        Arc::new(StringArray::from(vec![trial.data_version.as_str()])),
+        Arc::new(Int64Array::from(vec![trial.decision_time_ns])),
+        Arc::new(StringArray::from(vec![trial.scope.as_str()])),
+        Arc::new(StringArray::from(vec![summary.to_string()])),
+    ];
+    build(schema::TRIAL, schema::trial(FixedEncoding::Float), columns)
+}
+
+/// Record a run the engine refused.
+///
+/// This is not a way to skip a finished run. If `run_id` is already a trial,
+/// the row stays as it is. A caller cannot use this to drop a result.
+pub async fn write_rejected_trial(
+    db: &Database,
+    run_id: &str,
+    config_digest: &str,
+    trial: &TrialStamp,
+    started_at: UnixNanos,
+    detail: &str,
+) -> Result<()> {
+    create_run_tables(db).await?;
+    if trial_run_exists(db, run_id).await? {
+        return Ok(());
+    }
+    let batch = rejected_trial_batch(run_id, config_digest, trial, started_at, detail)?;
+    commit_run_batches(db, vec![(schema::TRIAL, batch)]).await
+}
+
+fn rejected_trial_batch(
+    run_id: &str,
+    config_digest: &str,
+    trial: &TrialStamp,
+    started_at: UnixNanos,
+    detail: &str,
+) -> Result<Option<RecordBatch>> {
+    let summary = serde_json::json!({
+        "final_cash": 0,
+        "realized_pnl": 0,
+        "commissions": 0,
+        "records_processed": 0,
+        "settlement_applied": false,
+        "rejected": detail,
+    });
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(vec![started_at.get()])),
+        Arc::new(StringArray::from(vec![run_id])),
+        Arc::new(StringArray::from(vec![config_digest])),
+        Arc::new(StringArray::from(vec![trial.code_identity.as_str()])),
+        Arc::new(StringArray::from(vec![trial.parameters.as_str()])),
+        Arc::new(StringArray::from(vec![trial.data_version.as_str()])),
+        Arc::new(Int64Array::from(vec![trial.decision_time_ns])),
+        Arc::new(StringArray::from(vec![trial.scope.as_str()])),
+        Arc::new(StringArray::from(vec![summary.to_string()])),
+    ];
+    build(schema::TRIAL, schema::trial(FixedEncoding::Float), columns)
+}
+
+async fn trial_run_exists(db: &Database, run_id: &str) -> Result<bool> {
+    let columns: &[&str] = &["run_id"];
+    let batches = scan(db, schema::TRIAL, ReadAt::Latest, None, Some(columns)).await?;
+    for batch in &batches {
+        let ids = column::<StringArray>(batch, "run_id")?;
+        for row in 0..batch.num_rows() {
+            if ids.value(row) == run_id {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Commit every non-empty run table in one transaction.

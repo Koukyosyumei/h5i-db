@@ -1,0 +1,25 @@
+[package]
+name = "h5i-db-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Worker API over h5i-db: idempotent effects, scoped handles, sealed holdout, reconciliation"
+
+[dependencies]
+h5i-db-core = { workspace = true }
+h5i-db-query = { workspace = true }
+h5i-db-backtest = { workspace = true }
+arrow = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

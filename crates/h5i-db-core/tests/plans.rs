@@ -244,6 +244,47 @@ async fn plan_write_previews_full_replacement() {
 }
 
 #[tokio::test]
+async fn a_plan_inside_a_fork_publishes_the_shadow_and_not_the_base() {
+    let (_dir, db) = setup().await;
+    let base_before = db.resolve("t", ReadAt::Latest).await.unwrap().head_sequence;
+    db.create_fork("agent", None, None, serde_json::Map::new())
+        .await
+        .unwrap();
+    let fork = db.open_fork("agent").await.unwrap();
+    assert!(fork.list_plans("t").await.unwrap().is_empty());
+    let plan = fork
+        .plan_write("t", vec![batch(&[1, 2, 3], 9.0)], WriteOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(plan.base_version, 0);
+    assert_eq!(
+        db.resolve("t", ReadAt::Latest).await.unwrap().head_sequence,
+        base_before
+    );
+    assert_eq!(
+        fork.load_plan("t", plan.plan_id).await.unwrap().plan_id,
+        plan.plan_id
+    );
+    assert!(db.list_plans("t").await.unwrap().is_empty());
+    let published = fork.apply_plan(&plan).await.unwrap();
+    assert_eq!(published.sequence, 1);
+    assert_eq!(
+        db.resolve("t", ReadAt::Latest).await.unwrap().head_sequence,
+        base_before
+    );
+    let (fork_rows, _) = fork
+        .scan("t", ReadAt::Latest, ScanOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(rows(&fork_rows), 3);
+    let (base_rows, _) = db
+        .scan("t", ReadAt::Latest, ScanOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(rows(&base_rows), 900);
+}
+
+#[tokio::test]
 async fn policy_forbids_direct_mutations_but_planned_path_works() {
     let (_dir, db) = setup().await;
 

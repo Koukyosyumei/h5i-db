@@ -14,7 +14,9 @@ path = "src/main.rs"
 [dependencies]
 h5i-db-core = { workspace = true }
 h5i-db-query = { workspace = true }
+h5i-db-service = { workspace = true }
 h5i-db-notebook = { workspace = true }
+blake3 = { workspace = true }
 arrow = { workspace = true }
 parquet = { workspace = true }
 datafusion = { workspace = true }

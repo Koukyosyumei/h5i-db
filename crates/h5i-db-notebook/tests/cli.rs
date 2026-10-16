@@ -32,6 +32,7 @@ fn test_kernel() -> Option<(String, PathBuf)> {
 
 struct Nb {
     dir: TempDir,
+    runtime: TempDir,
     notebook: PathBuf,
     jupyter_path: Option<PathBuf>,
 }
@@ -40,20 +41,36 @@ impl Nb {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let notebook = dir.path().join("test.ipynb");
+        // `session_dir()` is `$XDG_RUNTIME_DIR/h5i-db/nb` (else a uid-scoped
+        // temp path). `ls` scans that whole directory and unlinks every socket
+        // whose lock is free. Every test notebook is named test.ipynb, so a
+        // shared directory lets one test list another's live supervisor and
+        // sweep another's dead socket. A private runtime dir keeps each test's
+        // sockets to itself. It has to be set on every invocation: `serve`
+        // binds where its own environment says, and `status` / `ls` look there
+        // again from a fresh process.
+        //
+        // It lives directly under /tmp, not under `dir`: macOS's temp dir is
+        // /var/folders/../T/, and a socket path below it plus .tmpXXXXXX/ and
+        // h5i-db/nb/ reaches the 104-byte `sun_path` limit. tempfile creates
+        // it 0700.
+        #[cfg(unix)]
+        let runtime = tempfile::Builder::new()
+            .prefix("nb")
+            .tempdir_in("/tmp")
+            .unwrap();
+        #[cfg(not(unix))]
+        let runtime = tempfile::tempdir().unwrap();
         Nb {
             dir,
+            runtime,
             notebook,
             jupyter_path: None,
         }
     }
 
-    fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(binary());
-        command.args(args).current_dir(self.dir.path());
-        if let Some(path) = &self.jupyter_path {
-            command.env("JUPYTER_PATH", path);
-        }
-        command.output().expect("failed to run h5i-nb")
+    fn runtime_dir(&self) -> PathBuf {
+        self.runtime.path().to_path_buf()
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -62,11 +79,25 @@ impl Nb {
             .args(args)
             .current_dir(self.dir.path())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .env("XDG_RUNTIME_DIR", self.runtime_dir());
         if let Some(path) = &self.jupyter_path {
             command.env("JUPYTER_PATH", path);
         }
         command
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output().expect("failed to run h5i-nb")
+    }
+
+    fn lists_this(&self, session: &serde_json::Value) -> bool {
+        let Some(listed) = session["notebook"].as_str() else {
+            return false;
+        };
+        let listed = std::fs::canonicalize(listed).unwrap_or_else(|_| PathBuf::from(listed));
+        let mine = std::fs::canonicalize(&self.notebook).unwrap_or_else(|_| self.notebook.clone());
+        listed == mine
     }
 
     fn spawn(&self, args: &[&str]) -> std::process::Child {
@@ -313,11 +344,7 @@ fn ls_lists_a_running_session_and_forgets_it_afterwards() {
     let sessions = parsed["sessions"].as_array().unwrap();
     let mine = sessions
         .iter()
-        .find(|s| {
-            s["notebook"]
-                .as_str()
-                .is_some_and(|p| p.ends_with("test.ipynb"))
-        })
+        .find(|s| nb.lists_this(s))
         .unwrap_or_else(|| panic!("the running session was not listed: {}", stdout(&listed)));
     // Absolute, because a session outlives the shell that started it and a
     // relative path names nothing in particular afterwards.
@@ -338,11 +365,11 @@ fn ls_lists_a_running_session_and_forgets_it_afterwards() {
     while Instant::now() < deadline {
         let listed = nb.run(&["ls", "--format", "json"]);
         let parsed: serde_json::Value = serde_json::from_str(&stdout(&listed)).unwrap();
-        gone = !parsed["sessions"].as_array().unwrap().iter().any(|s| {
-            s["notebook"]
-                .as_str()
-                .is_some_and(|p| p.ends_with("test.ipynb"))
-        });
+        gone = !parsed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| nb.lists_this(s));
         if gone {
             break;
         }
@@ -372,9 +399,7 @@ fn ls_sweeps_a_socket_whose_supervisor_died() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|s| s["notebook"]
-                .as_str()
-                .is_some_and(|p| p.ends_with("test.ipynb"))),
+            .any(|s| nb.lists_this(s)),
         "a dead supervisor was listed as running: {}",
         stdout(&listed)
     );

@@ -1,0 +1,51 @@
+# Read by `h5i app`: extract, check, prove, mutate, doctor.
+
+[extract]
+crate = "kernel"
+start-from = ["transition"]
+schema = true
+include = ["h5i_app_sql"]
+
+[check]
+theorems = [
+    "lab_kernel.record_requires_worker",
+    "lab_kernel.promote_requires_pass",
+    "lab_kernel.reported_is_the_stored_correction",
+    "lab_kernel.holdout_is_once",
+    "lab_kernel.record_counts_the_trial",
+    "lab_kernel.rejected_never_promotes",
+    "lab_kernel.review_requires_human",
+    "lab_kernel.intern_names_the_text",
+    "lab_kernel.freeze_requires_a_counted_trial",
+]
+
+# Bugs the proofs must reject (`h5i app mutate`). Each `old` occurs once.
+[[mutant]]
+name = "agent_may_record_a_trial"
+old = "if actor.role != ROLE_WORKER {\n        return Err(Error::Forbidden);\n    }\n    match find_pending"
+new = "if false {\n        return Err(Error::Forbidden);\n    }\n    match find_pending"
+
+[[mutant]]
+name = "promote_without_a_passing_holdout"
+old = "if f.holdout != HOLDOUT_PASS {"
+new = "if false {"
+
+[[mutant]]
+name = "a_trial_does_not_count"
+old = "trials: f.trials + 1,"
+new = "trials: f.trials,"
+
+[[mutant]]
+name = "promote_a_rejected_strategy"
+old = "if f.rejected != 0 {"
+new = "if false {"
+
+[[mutant]]
+name = "freeze_another_familys_trial"
+old = "if t.family != f.id {"
+new = "if false {"
+
+[[mutant]]
+name = "a_reused_text_gets_a_new_id"
+old = "Some(id) => Ok((id, None, next)),"
+new = "Some(id) => Ok((next, None, next)),"

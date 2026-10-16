@@ -540,20 +540,15 @@ fn a_pinned_session_refuses_a_different_read_point() {
 }
 
 #[test]
-fn table_functions_refuse_rather_than_ignore_an_event_time_cutoff() {
+fn table_functions_apply_an_event_time_cutoff() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path();
     bootstrap_bulk(cwd);
-    // These consume their tables internally, so the cutoff cannot be pushed
-    // into them. Refusing loudly is the whole point: returning rows from after
-    // the decision instant while the session claims to be pinned is worse than
-    // any error.
-    for sql in [
-        "SELECT count(*) AS c FROM h5i('trades')",
-        "SELECT count(*) AS c FROM latest_on('trades','symbol')",
-        "SELECT count(*) AS c FROM asof_join('trades','trades','ts','ts','symbol')",
-    ] {
-        let out = run(
+    // The same cutoff the catalog view applies. `latest_on` has one group
+    // either way, so the price — not the count — is what shows the later
+    // print stayed hidden.
+    let clipped = |sql: &str| {
+        ok_json(&run(
             &[
                 "query",
                 "b.db",
@@ -564,30 +559,35 @@ fn table_functions_refuse_rather_than_ignore_an_event_time_cutoff() {
                 "json",
             ],
             cwd,
-        );
-        let e = err_envelope(&out);
-        assert_eq!(e["code"], "invalid_input", "for {sql}");
-        let msg = e["message"].as_str().unwrap();
-        assert!(
-            msg.contains("event-time cutoff") && msg.contains("Reference the table by name"),
-            "the refusal should name the cause and the alternative: {msg}"
-        );
-    }
-
-    // And the alternative it names actually works.
-    let ok = ok_json(&run(
-        &[
-            "query",
-            "b.db",
-            "SELECT count(*) AS c FROM trades",
-            "--decision-time",
-            "2026-07-01T10:30:00Z",
-            "--format",
-            "json",
-        ],
-        cwd,
-    ));
-    assert_eq!(scalar(&ok, "c"), 2.0);
+        ))
+    };
+    assert_eq!(
+        scalar(&clipped("SELECT count(*) AS c FROM h5i('trades')"), "c"),
+        2.0
+    );
+    assert_eq!(
+        scalar(
+            &clipped("SELECT max(price) AS c FROM latest_on('trades','symbol')"),
+            "c"
+        ),
+        20.0
+    );
+    assert_eq!(
+        scalar(
+            &clipped("SELECT count(*) AS c FROM asof_join('trades','trades','ts','ts','symbol')"),
+            "c"
+        ),
+        2.0
+    );
+    assert_eq!(
+        scalar(&clipped("SELECT count(*) AS c FROM trades"), "c"),
+        2.0
+    );
+    // A window over the clipped rows cannot reach the 11:00 or 12:00 prints.
+    assert_eq!(
+        scalar(&clipped("SELECT max(price) OVER () AS c FROM trades"), "c"),
+        20.0
+    );
 }
 
 #[test]

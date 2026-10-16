@@ -80,22 +80,35 @@ struct WriteFlags {
     /// Free-text note recorded in the version manifest.
     #[arg(long)]
     note: Option<String>,
-    /// Make this mutation replayable exactly once. A retry after an ambiguous
-    /// failure (a timeout that may or may not have committed) carries the same
-    /// key, finds the commit it already produced, and returns it instead of
-    /// writing the rows twice. Retries are only deduplicated against the last
+    /// Make this mutation replayable exactly once. A retry with the same key
+    /// and the same arguments returns the commit that already landed. The same
+    /// key with different arguments is rejected. Matching looks at the last
     /// 64 commits.
     #[arg(long)]
     idempotency_key: Option<String>,
 }
 
 impl WriteFlags {
-    fn to_options(&self) -> WriteOptions {
+    /// Build write options. When a key is set, bind it to `labels` and
+    /// `payload`. A later call with the same key and different bytes is
+    /// `idempotency_conflict` instead of a silent replay. Without a key the
+    /// fingerprint stays unset.
+    fn to_options_labeled(&self, labels: &[&str], payload: &[u8]) -> WriteOptions {
+        let fingerprint = self.idempotency_key.as_ref().map(|_| {
+            let mut hasher = blake3::Hasher::new();
+            for label in labels {
+                hasher.update(label.as_bytes());
+                hasher.update(&[0]);
+            }
+            hasher.update(payload);
+            hasher.finalize().to_hex().to_string()
+        });
         WriteOptions {
             expected_version: self.expected_version,
             note: self.note.clone(),
             user_meta: serde_json::Map::new(),
             idempotency_key: self.idempotency_key.clone(),
+            idempotency_fingerprint: fingerprint,
         }
     }
 }
@@ -409,6 +422,65 @@ enum Command {
         allow_mutations: bool,
     },
 
+    /// Print the service state, or diff it against a ledger snapshot.
+    ///
+    /// With `--ledger`, exit 0 when the database matches and exit 2 when it
+    /// does not. The diff is JSON on stdout either way.
+    Reconcile {
+        db: PathBuf,
+        /// Ledger snapshot JSON, the document this command prints without the flag.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
+
+    /// Seal a time range so ordinary reads skip it.
+    ///
+    /// The range stays readable only through `holdout`. `--start` and `--end`
+    /// are raw time-column units, or RFC3339 when the column is nanoseconds.
+    Seal {
+        db: PathBuf,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        table: String,
+        #[arg(long)]
+        start: String,
+        #[arg(long)]
+        end: String,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        idempotency_key: String,
+    },
+
+    /// Evaluate a sealed range once and record the result.
+    ///
+    /// The same key returns the recorded evaluation. Any other key is
+    /// `holdout_used` and reads nothing. `--sql` runs on the one handle that
+    /// can see the seal; `--summary` is the JSON stored with the record.
+    Holdout {
+        db: PathBuf,
+        #[arg(long)]
+        seal: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long)]
+        parameters: String,
+        #[arg(long)]
+        data_version: String,
+        #[arg(long)]
+        idempotency_key: String,
+        /// SQL to run through the holdout grant. Needs `--decision-time`.
+        #[arg(long)]
+        sql: Option<String>,
+        /// Decision time for `--sql`: integer nanoseconds or RFC3339.
+        #[arg(long)]
+        decision_time: Option<String>,
+        /// JSON object or value stored as the evaluation summary.
+        #[arg(long)]
+        summary: Option<String>,
+    },
+
     /// Check structural integrity (checksums, object existence).
     Verify {
         db: PathBuf,
@@ -445,6 +517,9 @@ impl Command {
             | Compact { db, .. }
             | Vacuum { db, .. }
             | Ui { db, .. }
+            | Reconcile { db, .. }
+            | Seal { db, .. }
+            | Holdout { db, .. }
             | Verify { db, .. } => Some(db),
             Snapshot(cmd) => Some(match cmd {
                 SnapshotCmd::Create { db, .. }
@@ -552,6 +627,10 @@ enum ForkCmd {
         name: String,
         #[arg(long)]
         table: String,
+        /// Return the first promote of this fork table when the same key is
+        /// presented again. A different table with the same key conflicts.
+        #[arg(long)]
+        idempotency_key: Option<String>,
     },
     /// Delete forks and everything they own, releasing their pins.
     ///
@@ -891,6 +970,99 @@ fn read_text_arg(arg: &str) -> Result<String> {
             std::fs::read_to_string(&other[1..]).map_err(|e| Error::io(other[1..].to_string(), e))
         }
         inline => Ok(inline.to_string()),
+    }
+}
+
+/// Integer time-column units, or RFC3339 when the text is not an integer.
+fn parse_time_ns(s: &str, flag: &str) -> Result<i64> {
+    if let Ok(raw) = s.parse::<i64>() {
+        return Ok(raw);
+    }
+    parse_rfc3339_ns(s, flag)
+}
+
+fn bound_payload(input: Option<&str>, batches: &[arrow::array::RecordBatch]) -> Result<Vec<u8>> {
+    match input {
+        None => Ok(Vec::new()),
+        // Stdin was already consumed while decoding. The IPC of those batches
+        // is the bytes a retry must reproduce.
+        Some("-") => ipc_bytes(batches),
+        Some(path) => std::fs::read(path).map_err(|err| Error::io(path, err)),
+    }
+}
+
+fn ipc_bytes(batches: &[arrow::array::RecordBatch]) -> Result<Vec<u8>> {
+    let Some(first) = batches.first() else {
+        return Ok(Vec::new());
+    };
+    let mut buf = Vec::new();
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())
+        .map_err(Error::Arrow)?;
+    for batch in batches {
+        writer.write(batch).map_err(Error::Arrow)?;
+    }
+    writer.finish().map_err(Error::Arrow)?;
+    Ok(buf)
+}
+
+fn range_options(
+    flags: &WriteFlags,
+    op: &str,
+    table: &str,
+    start: i64,
+    end: i64,
+    payload: &[u8],
+) -> WriteOptions {
+    let expected = flags
+        .expected_version
+        .map(|version| version.to_string())
+        .unwrap_or_default();
+    let note = flags.note.clone().unwrap_or_default();
+    let start_label = start.to_string();
+    let end_label = end.to_string();
+    flags.to_options_labeled(
+        &[
+            op,
+            table,
+            start_label.as_str(),
+            end_label.as_str(),
+            expected.as_str(),
+            note.as_str(),
+        ],
+        payload,
+    )
+}
+
+fn from_service(error: h5i_db_service::ServiceError) -> Error {
+    use h5i_db_service::ServiceError;
+    match error {
+        ServiceError::IdempotencyConflict { key, detail } => {
+            Error::IdempotencyConflict { key, detail }
+        }
+        ServiceError::VersionConflict {
+            table,
+            expected,
+            actual,
+        } => Error::VersionConflict {
+            table,
+            expected,
+            actual,
+        },
+        ServiceError::HoldoutUsed { seal_id, detail } => Error::HoldoutUsed { seal_id, detail },
+        ServiceError::PromoteConflict {
+            fork,
+            table,
+            base,
+            actual,
+        } => Error::PromoteConflict {
+            fork,
+            table,
+            base,
+            actual,
+            compaction_note: String::new(),
+        },
+        ServiceError::ScopeDenied { detail } => Error::invalid(detail),
+        ServiceError::Engine { code, detail } => Error::invalid(format!("{code}: {detail}")),
     }
 }
 
@@ -1329,7 +1501,20 @@ async fn run(cli: Cli) -> Result<()> {
             let db = open_db(&db, fork).await?;
             let resolved = db.resolve(&table, ReadAt::Latest).await?;
             let batches = read_aligned(&input, input_format, &resolved.schema, "ingest")?;
-            let opts = write_flags.to_options();
+            let payload = bound_payload(Some(&input), &batches)?;
+            let mode_label = match mode {
+                IngestMode::Write => "write",
+                IngestMode::Append => "append",
+            };
+            let expected = write_flags
+                .expected_version
+                .map(|version| version.to_string())
+                .unwrap_or_default();
+            let note = write_flags.note.clone().unwrap_or_default();
+            let opts = write_flags.to_options_labeled(
+                &[mode_label, table.as_str(), expected.as_str(), note.as_str()],
+                &payload,
+            );
             let result = match mode {
                 IngestMode::Write => db.write(&table, batches, opts).await?,
                 IngestMode::Append => db.append_with_retry(&table, batches, opts, retries).await?,
@@ -1416,9 +1601,23 @@ async fn run(cli: Cli) -> Result<()> {
             write_flags,
         } => {
             let db = open_db(&db, fork).await?;
-            let result = db
-                .restore(&table, version, write_flags.to_options())
-                .await?;
+            let expected = write_flags
+                .expected_version
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let note = write_flags.note.clone().unwrap_or_default();
+            let version_label = version.to_string();
+            let opts = write_flags.to_options_labeled(
+                &[
+                    "restore",
+                    table.as_str(),
+                    version_label.as_str(),
+                    expected.as_str(),
+                    note.as_str(),
+                ],
+                &[],
+            );
+            let result = db.restore(&table, version, opts).await?;
             write_value(&result, format)
         }
 
@@ -1435,19 +1634,19 @@ async fn run(cli: Cli) -> Result<()> {
             let db = open_db(&db, fork).await?;
             let resolved = db.resolve(&table, ReadAt::Latest).await?;
             let (start, end) = parse_range(&resolved, &start, &end)?;
-            let batches = match input {
-                Some(path) => read_aligned(&path, input_format, &resolved.schema, "replace-range")?,
+            let batches = match &input {
+                Some(path) => read_aligned(path, input_format, &resolved.schema, "replace-range")?,
                 None => vec![],
             };
+            let payload = bound_payload(input.as_deref(), &batches)?;
+            let opts = range_options(&write_flags, "replace-range", &table, start, end, &payload);
             if plan {
                 let p = db
-                    .plan_replace_range(&table, start, end, batches, write_flags.to_options())
+                    .plan_replace_range(&table, start, end, batches, opts)
                     .await?;
                 print_plan(&p, format)
             } else {
-                let result = db
-                    .replace_range(&table, start, end, batches, write_flags.to_options())
-                    .await?;
+                let result = db.replace_range(&table, start, end, batches, opts).await?;
                 write_value(&result, format)
             }
         }
@@ -1463,15 +1662,14 @@ async fn run(cli: Cli) -> Result<()> {
             let db = open_db(&db, fork).await?;
             let resolved = db.resolve(&table, ReadAt::Latest).await?;
             let (start, end) = parse_range(&resolved, &start, &end)?;
+            let opts = range_options(&write_flags, "delete-range", &table, start, end, &[]);
             if plan {
                 let p = db
-                    .plan_replace_range(&table, start, end, vec![], write_flags.to_options())
+                    .plan_replace_range(&table, start, end, vec![], opts)
                     .await?;
                 print_plan(&p, format)
             } else {
-                let result = db
-                    .delete_range(&table, start, end, write_flags.to_options())
-                    .await?;
+                let result = db.delete_range(&table, start, end, opts).await?;
                 write_value(&result, format)
             }
         }
@@ -1635,9 +1833,34 @@ async fn run(cli: Cli) -> Result<()> {
                 let db = open_db_ro(&db, fork).await?;
                 write_value(&db.fork_diff(&name, table.as_deref()).await?, format)
             }
-            ForkCmd::Promote { db, name, table } => {
+            ForkCmd::Promote {
+                db,
+                name,
+                table,
+                idempotency_key,
+            } => {
                 let db = open_db(&db, fork).await?;
-                write_value(&db.promote(&name, &table).await?, format)
+                if let Some(key) = idempotency_key {
+                    let info = db.fork_info(&name).await?;
+                    let expected_base = info.pin_by_name(&table).map(|(_, pin)| pin.sequence);
+                    let service = h5i_db_service::Service::open(db)
+                        .await
+                        .map_err(from_service)?;
+                    let receipt = service
+                        .promote(&h5i_db_service::PromoteOne {
+                            idempotency_key: key,
+                            fork: name,
+                            table: h5i_db_service::PromoteTable {
+                                table,
+                                expected_base,
+                            },
+                        })
+                        .await
+                        .map_err(from_service)?;
+                    write_value(&receipt, format)
+                } else {
+                    write_value(&db.promote(&name, &table).await?, format)
+                }
             }
             ForkCmd::Drop { db, names } => {
                 let db = open_db(&db, fork).await?;
@@ -1664,12 +1887,24 @@ async fn run(cli: Cli) -> Result<()> {
             write_flags,
         } => {
             let db = open_db(&db, fork).await?;
+            let expected = write_flags
+                .expected_version
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let note = write_flags.note.clone().unwrap_or_default();
+            let target = target_mb.map(|mb| mb.to_string()).unwrap_or_default();
+            let opts = write_flags.to_options_labeled(
+                &[
+                    "compact",
+                    table.as_str(),
+                    target.as_str(),
+                    expected.as_str(),
+                    note.as_str(),
+                ],
+                &[],
+            );
             let result = db
-                .compact_with(
-                    &table,
-                    target_mb.map(mb_to_bytes).transpose()?,
-                    write_flags.to_options(),
-                )
+                .compact_with(&table, target_mb.map(mb_to_bytes).transpose()?, opts)
                 .await?;
             write_value(&result, format)
         }
@@ -1697,6 +1932,139 @@ async fn run(cli: Cli) -> Result<()> {
                 open_db_ro(&db, fork).await?
             };
             h5i_db_ui::serve(Arc::new(database), label, port, allow_mutations).await
+        }
+
+        Command::Reconcile { db, ledger } => {
+            if fork.is_some() {
+                return Err(Error::invalid(
+                    "reconcile reads the base database; omit --fork",
+                ));
+            }
+            let db = open_db(&db, None).await?;
+            let service = h5i_db_service::Service::open(db)
+                .await
+                .map_err(from_service)?;
+            let actual = service.export_state().await.map_err(from_service)?;
+            let Some(ledger) = ledger else {
+                return write_value(&actual, format);
+            };
+            let bytes = std::fs::read(&ledger)
+                .map_err(|err| Error::io(ledger.display().to_string(), err))?;
+            let snapshot: h5i_db_service::StateDocument = serde_json::from_slice(&bytes)
+                .map_err(|err| Error::invalid(format!("ledger JSON: {err}")))?;
+            let diff = h5i_db_service::Service::reconcile(&actual, &snapshot);
+            write_value(&diff, format)?;
+            if diff.agrees() {
+                Ok(())
+            } else {
+                Err(Error::invalid("ledger does not match the database"))
+            }
+        }
+
+        Command::Seal {
+            db,
+            id,
+            table,
+            start,
+            end,
+            note,
+            idempotency_key,
+        } => {
+            if fork.is_some() {
+                return Err(Error::invalid(
+                    "seal operates on the base database; omit --fork",
+                ));
+            }
+            let db = open_db(&db, None).await?;
+            let service = h5i_db_service::Service::open(db)
+                .await
+                .map_err(from_service)?;
+            let receipt = service
+                .seal(&h5i_db_service::SealCall {
+                    idempotency_key,
+                    id,
+                    table,
+                    start_ns: parse_time_ns(&start, "--start")?,
+                    end_ns: parse_time_ns(&end, "--end")?,
+                    note,
+                })
+                .await
+                .map_err(from_service)?;
+            write_value(&receipt, format)
+        }
+
+        Command::Holdout {
+            db,
+            seal,
+            code,
+            parameters,
+            data_version,
+            idempotency_key,
+            sql,
+            decision_time,
+            summary,
+        } => {
+            if fork.is_some() {
+                return Err(Error::invalid(
+                    "holdout operates on the base database; omit --fork",
+                ));
+            }
+            if sql.is_none() && summary.is_none() {
+                return Err(Error::invalid(
+                    "holdout needs --sql or --summary so the evaluation records a result",
+                ));
+            }
+            let decision = match (&sql, &decision_time) {
+                (Some(_), Some(text)) => Some(parse_time_ns(text, "--decision-time")?),
+                (Some(_), None) => {
+                    return Err(Error::invalid("holdout --sql needs --decision-time"));
+                }
+                _ => None,
+            };
+            let summary_value = match summary {
+                Some(text) => Some(
+                    serde_json::from_str::<serde_json::Value>(&text)
+                        .map_err(|err| Error::invalid(format!("--summary JSON: {err}")))?,
+                ),
+                None => None,
+            };
+            let db = open_db(&db, None).await?;
+            let service = h5i_db_service::Service::open(db)
+                .await
+                .map_err(from_service)?;
+            let opened = service
+                .begin_holdout(&h5i_db_service::HoldoutCall {
+                    idempotency_key,
+                    seal_id: seal,
+                    code_identity: code,
+                    parameters,
+                    data_version,
+                })
+                .await
+                .map_err(from_service)?;
+            match opened {
+                h5i_db_service::HoldoutOpened::Completed(receipt) => write_value(&receipt, format),
+                h5i_db_service::HoldoutOpened::Grant(grant) => {
+                    let mut recorded = summary_value.unwrap_or(serde_json::Value::Null);
+                    if let Some(sql) = sql {
+                        let rows = grant
+                            .handle()
+                            .query(&h5i_db_service::QueryRequest {
+                                decision_time_ns: decision.expect("checked above"),
+                                sql,
+                                max_rows: None,
+                            })
+                            .await
+                            .map_err(from_service)?;
+                        recorded = match recorded {
+                            serde_json::Value::Null => serde_json::json!({ "rows": rows.rows }),
+                            other => serde_json::json!({ "summary": other, "rows": rows.rows }),
+                        };
+                    }
+                    let receipt = grant.finish(recorded).await.map_err(from_service)?;
+                    write_value(&receipt, format)
+                }
+            }
         }
 
         Command::Verify { db, table, deep } => {

@@ -184,6 +184,12 @@ pub enum Error {
     #[error("fork {name:?} already exists")]
     ForkExists { name: String },
 
+    #[error("idempotency conflict for key {key}: {detail}")]
+    IdempotencyConflict { key: String, detail: String },
+
+    #[error("holdout {seal_id} already used: {detail}")]
+    HoldoutUsed { seal_id: String, detail: String },
+
     #[error(
         "cannot promote table {table:?} from fork {fork:?}: base moved from version \
          {base} to {actual} since the fork was created{compaction_note}"
@@ -271,6 +277,8 @@ impl Error {
             Error::VersionNotFound { .. } => "version_not_found",
             Error::SnapshotNotFound { .. } => "snapshot_not_found",
             Error::VersionConflict { .. } => "version_conflict",
+            Error::IdempotencyConflict { .. } => "idempotency_conflict",
+            Error::HoldoutUsed { .. } => "holdout_used",
             Error::ForkNotFound { .. } => "fork_not_found",
             Error::ForkExists { .. } => "fork_exists",
             Error::PromoteConflict { .. } => "promote_conflict",
@@ -356,6 +364,14 @@ impl Error {
                 "re-read the head of {table:?} and retry against it; pure appends rebase \
                  safely (the CLI and Python bindings already auto-retry those)"
             )),
+            Error::IdempotencyConflict { .. } => Some(
+                "this idempotency key was already used for a different request; use a new key \
+                 for a new request"
+                    .into(),
+            ),
+            Error::HoldoutUsed { .. } => Some(
+                "a sealed range is evaluated once; a different fingerprint cannot read it".into(),
+            ),
             Error::VersionNotFound { table, hint, .. } => {
                 Some(format!("{hint}; run `h5i-db versions <db> {table}`"))
             }

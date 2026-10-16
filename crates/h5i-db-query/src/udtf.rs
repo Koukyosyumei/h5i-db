@@ -114,7 +114,6 @@ impl TableFunctionImpl for TimeTravelFunc {
         let table = literal_str(&args[0]).ok_or_else(|| {
             DataFusionError::Plan("h5i: first argument must be a table name string".into())
         })?;
-        self.pin.check_usable("h5i")?;
         let at = match args.get(1) {
             None => self.pin.read_at(),
             Some(arg) => {
@@ -142,10 +141,9 @@ impl TableFunctionImpl for TimeTravelFunc {
 
         let resolved = block_on(self.db.resolve(table, at))
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        Ok(Arc::new(H5iTableProvider::new(
-            resolved,
-            self.url.clone(),
-            self.metrics.clone(),
-        )))
+        Ok(Arc::new(
+            H5iTableProvider::new(resolved, self.url.clone(), self.metrics.clone())
+                .with_database(Arc::clone(&self.db)),
+        ))
     }
 }

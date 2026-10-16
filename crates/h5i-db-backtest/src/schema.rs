@@ -65,6 +65,8 @@ pub const FILLS: &str = "bt_fills";
 pub const POSITIONS: &str = "bt_positions";
 /// Run output: the equity curve, which the tearsheet layer consumes.
 pub const EQUITY: &str = "bt_equity";
+/// Run output: one trial record per backtest. Always written.
+pub const TRIAL: &str = "bt_trial";
 
 fn ts(name: &str) -> Field {
     Field::new(name, DataType::Timestamp(TimeUnit::Nanosecond, None), false)
@@ -446,6 +448,24 @@ pub fn positions(encoding: FixedEncoding) -> SchemaRef {
     ]))
 }
 
+/// `bt_trial`: one row per backtest. There is no way to skip it.
+///
+/// Money is inside `result_summary` as fixed-point raw integers, so this
+/// schema does not depend on the table encoding.
+pub fn trial(_encoding: FixedEncoding) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        ts("ts"),
+        text("run_id"),
+        text("config_digest"),
+        text("code_identity"),
+        text("parameters"),
+        text("data_version"),
+        opt_int("decision_time_ns"),
+        text("scope"),
+        text("result_summary"),
+    ]))
+}
+
 /// `bt_equity`: the equity curve, sampled on a fixed interval of simulated
 /// time. This is the table `h5i_db.quant.returns()` reads.
 pub fn equity(encoding: FixedEncoding) -> SchemaRef {
@@ -520,6 +540,7 @@ pub fn run_output_tables(encoding: FixedEncoding) -> Vec<(&'static str, SchemaRe
         (FILLS, fills(encoding), run_output_options()),
         (POSITIONS, positions(encoding), run_output_options()),
         (EQUITY, equity(encoding), run_output_options()),
+        (TRIAL, trial(encoding), run_output_options()),
     ]
 }
 

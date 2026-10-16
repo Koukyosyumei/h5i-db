@@ -359,7 +359,6 @@ impl TableFunctionImpl for GapFillFunc {
                     .into(),
             ));
         }
-        self.pin.check_usable("gapfill")?;
         let at = self.pin.read_at();
         let (resolved, batches) = block_on(async {
             let resolved = self.db.resolve(&table, at).await?;
@@ -394,7 +393,18 @@ impl TableFunctionImpl for GapFillFunc {
                 .collect::<Vec<_>>(),
             resolved.schema.metadata().clone(),
         ));
-        let batch = build_gapfilled(output_schema, &batches, &time_col, step, mode)?;
+        let mut batch = build_gapfilled(output_schema, &batches, &time_col, step, mode)?;
+        // `scan_resolved` already drops stored rows the scope hides. The grid
+        // can still invent a timestamp inside a hole between two visible rows;
+        // those synthetic rows are the sealed period too, so they go as well.
+        if let Some(enf) = self
+            .db
+            .enforcement(&table, resolved.schema.as_ref(), Some(time_col.as_str()))
+            .map_err(|e| DataFusionError::External(Box::new(e)))?
+        {
+            batch = h5i_db_core::filter_record_batch(&batch, &time_col, &enf.visibility)
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        }
         // The batch's schema, not the one built above: `build_gapfilled` adds
         // the `h5i.gapfill.*` metadata, and `MemTable` requires the provider
         // schema and the batch schema to be the same.

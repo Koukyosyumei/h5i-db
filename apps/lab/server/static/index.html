@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research lab</title>
+<style>
+/* Palette transcribed from Harbor Dark (MIT), HANCORE, 2025.
+   https://github.com/HANCORE-linux/omarchy-harbordark-theme
+   See README.md for the license notice. */
+:root {
+  --hd-bg: #1B1B1B;
+  --hd-bg-darker: #141414;
+  --hd-bg-lighter: #262626;
+  --hd-fg: #efebdc;
+  --hd-fg-dim: #C0AF7F;
+  --hd-muted: #89856b;
+  --hd-accent: #e75a50;
+  --hd-selection: #323232;
+  --hd-red: #F44336;
+  --hd-yellow: #a99b7a;
+  --hd-blue: #e58980;
+  --hd-cyan: #6d6d6d;
+  --hd-green: #77838a;
+  --hd-line: #323232;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--hd-bg);
+  color: var(--hd-fg);
+  font: 14px/1.45 "Iosevka", "IBM Plex Sans", sans-serif;
+}
+header {
+  display: flex;
+  gap: 1.2rem;
+  align-items: center;
+  padding: 0.7rem 1.2rem;
+  background: var(--hd-bg-darker);
+  border-bottom: 1px solid var(--hd-line);
+}
+h1 { font-size: 1.05rem; font-weight: 500; margin: 0; letter-spacing: 0.04em; white-space: nowrap; }
+h2 { font-size: 0.9rem; font-weight: 500; color: var(--hd-fg-dim); margin: 0 0 0.5rem; letter-spacing: 0.03em; }
+h2 small { color: var(--hd-muted); font-weight: 400; margin-left: 0.5rem; letter-spacing: 0; }
+.note { color: var(--hd-muted); font-size: 0.82rem; margin: 0 0 0.6rem; }
+header .note { margin: 0; flex: 1; }
+#signin { display: flex; gap: 0.4rem; align-items: center; }
+#who { color: var(--hd-fg-dim); font-size: 0.85rem; white-space: nowrap; }
+.stats { display: flex; gap: 0.6rem; padding: 0.8rem 1rem 0; flex-wrap: wrap; }
+.stat { background: var(--hd-bg-lighter); border: 1px solid var(--hd-line); padding: 0.45rem 0.8rem; min-width: 8.5rem; }
+.stat b { display: block; font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--hd-muted); font-size: 0.78rem; }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: 1rem; }
+section {
+  background: var(--hd-bg-lighter);
+  border: 1px solid var(--hd-line);
+  padding: 0.8rem 0.9rem;
+  min-width: 0;
+}
+.wide { grid-column: 1 / -1; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 0.32rem 0.45rem; border-bottom: 1px solid var(--hd-line); vertical-align: middle; }
+th { color: var(--hd-muted); font-weight: 500; font-size: 0.8rem; white-space: nowrap; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+tr:hover td { background: var(--hd-selection); }
+.sub { display: block; color: var(--hd-muted); font-size: 0.78rem; }
+.pos { color: var(--hd-fg-dim); }
+.neg { color: var(--hd-blue); }
+.bad { color: var(--hd-red); }
+.badge { display: inline-block; padding: 0.05rem 0.45rem; border: 1px solid var(--hd-cyan); font-size: 0.75rem; color: var(--hd-fg-dim); white-space: nowrap; }
+.badge.hot { border-color: var(--hd-accent); color: var(--hd-accent); }
+.badge.cold { border-color: var(--hd-line); color: var(--hd-muted); }
+.bar { position: relative; height: 0.5rem; background: var(--hd-bg); border: 1px solid var(--hd-line); width: 6rem; display: inline-block; vertical-align: middle; margin-right: 0.4rem; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--hd-accent); }
+code, pre { font-family: "Iosevka", "JetBrains Mono", monospace; font-size: 0.8rem; }
+pre { background: var(--hd-bg); border: 1px solid var(--hd-line); padding: 0.5rem; margin: 0.4rem 0; white-space: pre-wrap; color: var(--hd-fg-dim); }
+details summary { cursor: pointer; color: var(--hd-muted); font-size: 0.8rem; }
+.card { border: 1px solid var(--hd-line); background: var(--hd-bg); padding: 0.7rem 0.8rem; margin-bottom: 0.7rem; display: grid; grid-template-columns: 1.3fr 1fr; gap: 0.4rem 1.2rem; }
+.card h3 { margin: 0; font-size: 0.95rem; font-weight: 500; }
+.card .meta { color: var(--hd-muted); font-size: 0.8rem; }
+.kv { display: grid; grid-template-columns: repeat(4, auto); gap: 0.15rem 0.9rem; font-variant-numeric: tabular-nums; font-size: 0.85rem; align-content: start; }
+.kv span { color: var(--hd-muted); font-size: 0.75rem; }
+.actions { grid-column: 1 / -1; display: flex; gap: 0.4rem; align-items: center; }
+.actions input { flex: 1; }
+button, input {
+  background: var(--hd-bg);
+  color: var(--hd-fg);
+  border: 1px solid var(--hd-cyan);
+  padding: 0.28rem 0.55rem;
+  font: inherit;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
+button.primary { border-color: var(--hd-accent); color: var(--hd-accent); }
+.empty { color: var(--hd-muted); font-size: 0.85rem; padding: 0.4rem 0; }
+svg.spark { display: block; }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  header { flex-wrap: wrap; }
+  .card { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>research lab</h1>
+  <p class="note" id="trust">advisory: an agent with a shell can open the data directory. enforced: an h5i box denies that path, so the API is the only way in.</p>
+  <div id="signin">
+    <span id="who"></span>
+    <input id="token" type="password" placeholder="bearer token" autocomplete="off">
+    <button id="change" hidden>change token</button>
+  </div>
+</header>
+<div class="stats" id="stats"></div>
+<main>
+  <section class="wide">
+    <h2>review queue<small>frozen strategies waiting for a human decision</small></h2>
+    <div id="review"></div>
+  </section>
+  <section>
+    <h2>leaderboard<small>ranked by deflated Sharpe, the corrected score the worker stored</small></h2>
+    <p class="note">The probability that the family's best Sharpe beats what its number of trials would produce by luck. Raw returns are on the trials, not here.</p>
+    <table id="board"><thead><tr><th>#</th><th>family</th><th>agent</th><th class="num">trials</th><th>deflated Sharpe</th><th>status</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>fleet</h2>
+    <table id="agents"><thead><tr><th>agent</th><th>trust</th><th class="num">trials</th><th>state</th><th>last output</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="wide">
+    <h2>trials<small>every counted trial, newest first; numbers are from the run's fills and equity curve</small></h2>
+    <table id="lineage"><thead><tr><th>trial</th><th>family</th><th>strategy</th><th>params</th><th>data up to</th><th>equity</th><th class="num">return</th><th class="num">max DD</th><th class="num">Sharpe</th><th class="num">fills</th><th class="num">costs</th><th class="num">win rate</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>alerts</h2>
+    <p><button id="replay">replay dead effects</button></p>
+    <table id="alerts"><thead><tr><th>kind</th><th>detail</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section>
+    <h2>review notes</h2>
+    <table id="notes"><thead><tr><th>family</th><th>decision</th><th>text</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+const tokenEl = document.querySelector("#token");
+const changeEl = document.querySelector("#change");
+function storedToken() {
+  try { return sessionStorage.getItem("lab-token") || ""; } catch (e) { return ""; }
+}
+let token = storedToken();
+function showSignin() {
+  const signed = token !== "";
+  tokenEl.hidden = signed;
+  changeEl.hidden = !signed;
+  document.querySelector("#who").textContent = signed ? "signed in" : "";
+}
+tokenEl.addEventListener("change", () => {
+  token = tokenEl.value.trim();
+  tokenEl.value = "";
+  try { sessionStorage.setItem("lab-token", token); } catch (e) {}
+  showSignin();
+  refresh();
+});
+changeEl.addEventListener("click", () => { token = ""; showSignin(); tokenEl.focus(); });
+showSignin();
+function headers() {
+  return { "authorization": "Bearer " + token, "content-type": "application/json" };
+}
+async function rpc(cmd) {
+  const res = await fetch("/rpc", { method: "POST", headers: headers(), body: JSON.stringify(cmd) });
+  return res.json();
+}
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function rows(table, html, empty) {
+  const cols = table.querySelectorAll("thead th").length;
+  table.querySelector("tbody").innerHTML = html || `<tr><td colspan="${cols}" class="empty">${empty || "nothing yet"}</td></tr>`;
+}
+const STAT_OFFSET = 1000;
+function decodeStat(n) { return Number(n) / 1000000 - STAT_OFFSET; }
+function pct(x, digits) {
+  if (x === undefined || x === null || !isFinite(x)) return "–";
+  return (x * 100).toFixed(digits ?? 1) + "%";
+}
+function signed(x, text) { return `<span class="${x > 0 ? "pos" : x < 0 ? "neg" : ""}">${text}</span>`; }
+function money(x) {
+  if (x === undefined || x === null || !isFinite(x)) return "–";
+  return Math.abs(x) >= 1000 ? (x / 1000).toFixed(1) + "k" : x.toFixed(0);
+}
+function when(ns) {
+  const ms = Number(ns) / 1e6;
+  if (!isFinite(ms) || ms <= 0) return "–";
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+function day(ns) {
+  const ms = Number(ns) / 1e6;
+  if (!isFinite(ms) || ms <= 0) return "–";
+  return new Date(ms).toISOString().slice(0, 10);
+}
+function parse(text) { try { return text ? JSON.parse(text) : null; } catch (e) { return null; } }
+function spark(points, width, height) {
+  width = width || 120; height = height || 28;
+  if (!points || points.length < 2) return `<span class="sub">no curve</span>`;
+  const lo = Math.min(...points), hi = Math.max(...points);
+  const span = hi - lo || 1;
+  const xy = points.map((v, i) => `${(i / (points.length - 1) * (width - 2) + 1).toFixed(1)},${(height - 1 - (v - lo) / span * (height - 2)).toFixed(1)}`);
+  const up = points[points.length - 1] >= points[0];
+  const color = up ? "var(--hd-fg-dim)" : "var(--hd-blue)";
+  const base = (height - 1 - (points[0] - lo) / span * (height - 2)).toFixed(1);
+  return `<svg class="spark" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><line x1="1" x2="${width - 1}" y1="${base}" y2="${base}" stroke="var(--hd-line)" stroke-dasharray="2 2"/><polyline fill="none" stroke="${color}" stroke-width="1.3" points="${xy.join(" ")}"/></svg>`;
+}
+function paramsShort(text) {
+  const p = parse(text);
+  if (!p || typeof p !== "object") return esc(text);
+  return Object.entries(p).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(" ");
+}
+function holdoutName(n) { return { 0: "none", 1: "pass", 2: "fail", 3: "queued" }[n] || String(n); }
+function status(f) {
+  if (f.rejected) return `<span class="badge cold">rejected</span>`;
+  if (f.promoted) return `<span class="badge hot">promoted</span>`;
+  if (f.holdout === 1) return `<span class="badge hot">holdout pass</span>`;
+  if (f.holdout === 2) return `<span class="badge cold">holdout fail</span>`;
+  if (f.holdout === 3) return `<span class="badge">holdout queued</span>`;
+  if (f.frozen_code) return `<span class="badge">frozen</span>`;
+  return `<span class="badge cold">exploring</span>`;
+}
+function metricsOf(t) {
+  const c = parse(t.curve) || {};
+  return {
+    curve: c,
+    ret: c.return !== undefined ? c.return : decodeStat(t.score),
+    dd: c.max_drawdown, sharpe: c.sharpe, fills: c.fills, costs: c.costs,
+    win: c.win_rate, equity: c.equity, net: c.net, gross: c.gross,
+  };
+}
+async function getJson(path) {
+  return fetch(path, { headers: headers() }).then(r => r.json()).catch(() => ({}));
+}
+async function refresh() {
+  if (!token) return;
+  const fleet = await rpc({ cmd: "fleet" });
+  if (!fleet.agents) { document.querySelector("#who").textContent = "token refused"; return; }
+  const agents = fleet.agents || [];
+  const families = fleet.families || [];
+  const trials = fleet.trials || [];
+  const texts = fleet.texts || [];
+  const identity = Object.fromEntries(texts.filter(t => t.kind === "code").map(t => [t.id, t]));
+  const agentName = Object.fromEntries(agents.map(a => [a.id, a.name || ("agent " + a.id)]));
+  const familyName = f => f.method_text || ("family " + f.id);
+  const byFamily = Object.fromEntries(families.map(f => [f.id, f]));
+  const [notes, live, alertsBody, holdoutBody] = await Promise.all([
+    getJson("/api/comments"), getJson("/api/activity"), getJson("/api/alerts"), getJson("/api/holdouts"),
+  ]);
+  const alerts = parse(alertsBody.alerts) || [];
+  const holdouts = parse(holdoutBody.holdouts) || [];
+
+  const enforced = agents.some(a => a.sandbox === 1);
+  const advisory = agents.some(a => a.sandbox === 0);
+  document.querySelector("#trust").textContent = enforced && advisory
+    ? "mixed fleet. advisory agents can open the data directory. enforced agents run in an h5i box that denies it."
+    : enforced
+      ? "enforced: agents run in an h5i box. the data directory is not granted, so the API is the only path."
+      : "advisory: no sandbox. the API refuses a sealed read and a query past the agent's decision time; an agent with a shell can still open the files.";
+
+  const best = Math.max(0, ...families.map(f => f.corrected));
+  document.querySelector("#stats").innerHTML = [
+    [agents.length, "agents"],
+    [families.length, "families"],
+    [trials.length, "counted trials"],
+    [families.filter(f => f.frozen_code && !f.promoted && !f.rejected).length, "awaiting review"],
+    [families.filter(f => f.promoted).length, "promoted"],
+    [alerts.length, "alerts"],
+    [(best / 10000).toFixed(1) + "%", "best deflated Sharpe"],
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
+
+  // Review queue: frozen and undecided first, then the decided ones.
+  const queue = families.filter(f => f.frozen_code).sort((a, b) =>
+    (a.promoted || a.rejected) - (b.promoted || b.rejected) || b.corrected - a.corrected);
+  // Keep what the human is typing across refreshes.
+  const typed = Object.fromEntries([...document.querySelectorAll("#review input")].map(i => [i.id, i.value]));
+  const focused = document.activeElement && document.activeElement.id;
+  document.querySelector("#review").innerHTML = queue.map(f => {
+    const frozen = trials.filter(t => t.family === f.id && t.code === f.frozen_code && t.params === f.frozen_params).pop();
+    const m = frozen ? metricsOf(frozen) : { curve: {} };
+    const code = identity[f.frozen_code] || {};
+    const ho = holdouts.find(h => h.code_identity === code.identity && h.parameters === f.frozen_params_text);
+    const hs = ho && ho.summary ? ho.summary : null;
+    const actions = [];
+    if (f.holdout === 1 && !f.promoted && !f.rejected) actions.push(`<button class="primary" data-promote="${f.id}">promote</button>`);
+    if (!f.promoted && !f.rejected) actions.push(`<button data-reject="${f.id}">reject</button>`);
+    actions.push(`<button data-note="${f.id}">comment</button>`);
+    const holdoutLine = hs
+      ? `holdout on the sealed span: ${signed(hs.return, pct(hs.return, 2))} return, max DD ${pct(hs.max_drawdown, 1)}, ${esc(hs.fills)} fills`
+      : (f.holdout === 0 ? "holdout not run yet" : "holdout " + holdoutName(f.holdout));
+    return `<div class="card">
+      <div>
+        <h3>${esc(familyName(f))} ${status(f)}</h3>
+        <div class="meta">${esc(agentName[f.agent])} · ${esc(f.trials)} trials · deflated Sharpe ${(f.corrected / 10000).toFixed(1)}%</div>
+        <p>${esc(f.hypothesis_text)}</p>
+        <div class="meta">frozen: <b>${esc(f.frozen_name)}</b> <code>${paramsShort(f.frozen_params_text)}</code>${frozen ? " · trial " + esc(frozen.id) + " · data up to " + esc(day(frozen.decision_time)) : ""}</div>
+        <div class="meta">${holdoutLine}</div>
+        <details><summary>code ${esc((code.identity || "").slice(0, 19))}</summary><pre>${esc(code.body)}</pre></details>
+      </div>
+      <div>
+        ${spark(m.equity, 260, 54)}
+        <div class="kv">
+          <span>return</span><span>max DD</span><span>Sharpe</span><span>fills</span>
+          <b>${signed(m.ret, pct(m.ret, 2))}</b><b>${pct(m.dd, 1)}</b><b>${m.sharpe !== undefined ? m.sharpe.toFixed(2) : "–"}</b><b>${m.fills ?? "–"}</b>
+          <span>gross</span><span>costs</span><span>net</span><span>win rate</span>
+          <b>${money(m.gross)}</b><b>${money(m.costs)}</b><b>${signed(m.net, money(m.net))}</b><b>${pct(m.win, 0)}</b>
+        </div>
+      </div>
+      <div class="actions"><input id="c-${f.id}" placeholder="comment to ${esc(agentName[f.agent])}">${actions.join("")}</div>
+    </div>`;
+  }).join("") || `<p class="empty">No frozen strategy yet. A family enters the queue when its agent freezes a counted trial.</p>`;
+  for (const [id, value] of Object.entries(typed)) {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+  }
+  if (focused && document.getElementById(focused)) document.getElementById(focused).focus();
+
+  const ranked = families.slice().sort((a, b) => b.corrected - a.corrected);
+  rows(document.querySelector("#board"), ranked.map((f, i) =>
+    `<tr><td>${i + 1}</td><td>${esc(familyName(f))}<span class="sub">${esc(f.hypothesis_text)}</span></td><td>${esc(agentName[f.agent])}</td><td class="num">${f.trials}</td><td title="${f.corrected} millionths"><span class="bar"><i style="width:${(f.corrected / 10000).toFixed(1)}%"></i></span>${(f.corrected / 10000).toFixed(1)}%</td><td>${status(f)}</td></tr>`).join(""));
+
+  const procs = Object.fromEntries((live.agents || []).map(a => [a.agent, a]));
+  rows(document.querySelector("#agents"), agents.map(a => {
+    const p = procs[a.id];
+    const state = !p ? "not started" : p.paused === "true" ? "paused" : (p.running === "true" ? "running" : "exited");
+    const last = p ? (p.output || "").trim().split("\n").pop() : "";
+    return `<tr><td>${esc(agentName[a.id])}<span class="sub">agent ${a.id}</span></td><td>${esc(a.trust)}</td><td class="num">${a.used} / ${a.budget}</td><td>${esc(state)}</td><td><span class="sub">${esc(last.slice(-90))}</span></td></tr>`;
+  }).join(""));
+
+  rows(document.querySelector("#lineage"), trials.slice().reverse().map(t => {
+    const m = metricsOf(t);
+    const f = byFamily[t.family] || {};
+    const failed = m.curve.rejected || m.curve.unmeasured;
+    return `<tr><td>${t.id}<span class="sub">${esc(agentName[t.agent])}</span></td><td>${esc(familyName(f))}</td><td>${esc(t.code_name)}</td><td><code>${paramsShort(t.params_text)}</code></td><td>${esc(when(t.decision_time))}</td><td>${failed ? `<span class="bad" title="${esc(failed)}">no curve</span>` : spark(m.equity)}</td><td class="num">${signed(m.ret, pct(m.ret, 2))}</td><td class="num">${pct(m.dd, 1)}</td><td class="num">${m.sharpe !== undefined ? m.sharpe.toFixed(2) : "–"}</td><td class="num">${m.fills ?? "–"}</td><td class="num">${money(m.costs)}</td><td class="num">${pct(m.win, 0)}</td></tr>`;
+  }).join(""));
+
+  // Instants in alert text are nanoseconds; show them as dates.
+  const readable = text => esc(text).replace(/\b1\d{18}\b/g, ns => when(ns));
+  rows(document.querySelector("#alerts"), alerts.map(a => `<tr><td class="bad">${esc(a.kind)}</td><td>${readable(a.detail)}</td></tr>`).join(""), "no alerts");
+  rows(document.querySelector("#notes"), (notes.comments || []).map(c =>
+    `<tr><td>${esc(familyName(byFamily[c.family] || {}))}</td><td>${esc(c.decision)}</td><td>${esc(c.text)}</td></tr>`).join(""), "no notes");
+}
+async function review(family, decision) {
+  const input = document.querySelector("#c-" + family);
+  const text = (input && input.value) || (decision === "reject" ? "rejected" : "");
+  if (!text) { if (input) input.focus(); return; }
+  await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family: Number(family), text, decision }) });
+  refresh();
+}
+document.body.addEventListener("click", async (event) => {
+  const data = event.target.dataset || {};
+  if (data.promote) {
+    await rpc({ cmd: "promote", family: Number(data.promote) });
+    refresh();
+  } else if (data.reject) {
+    review(data.reject, "reject");
+  } else if (data.note) {
+    review(data.note, "note");
+  }
+});
+document.querySelector("#replay").addEventListener("click", async () => {
+  await fetch("/api/outbox/replay", { method: "POST", headers: headers() });
+  refresh();
+});
+setInterval(refresh, 4000);
+refresh();
+</script>
+</body>
+</html>

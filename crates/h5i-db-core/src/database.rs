@@ -17,6 +17,8 @@ use crate::catalog::{self, CatalogEntry};
 use crate::error::{Error, Result};
 use crate::layout;
 use crate::manifest::{Head, OpKind, SegmentMeta, VersionManifest};
+use crate::scope::{Enforcement, HoldoutGrant, ReadScope};
+use crate::seal::{Seal, SealCache};
 use crate::segment::{
     MERGE_CHUNK_ROWS, SegmentWriter, batch_is_sorted, read_segment, sort_batches, time_values_i64,
 };
@@ -151,11 +153,21 @@ pub struct WriteOptions {
     /// ticks are silent poison: nothing errors, the data is simply wrong from
     /// then on, so this is the one guard an unattended ingest loop needs.
     pub idempotency_key: Option<String>,
+    /// Canonical fingerprint of the request that `idempotency_key` names.
+    ///
+    /// `None` keeps the historical key-only replay. When both this and the
+    /// stored fingerprint are present they must be equal. A mismatch,
+    /// including a stored key with no fingerprint, is
+    /// [`Error::IdempotencyConflict`] and the scan stops.
+    pub idempotency_fingerprint: Option<String>,
 }
 
 /// Manifest `user_meta` key under which an idempotency token is recorded.
 /// Namespaced so it cannot collide with a caller's own metadata.
 pub const IDEMPOTENCY_META_KEY: &str = "h5i.idempotency_key";
+
+/// Manifest `user_meta` key for [`WriteOptions::idempotency_fingerprint`].
+pub const IDEMPOTENCY_FINGERPRINT_META_KEY: &str = "h5i.idempotency_fingerprint";
 
 /// How many commits back a key is looked for.
 ///
@@ -226,6 +238,12 @@ pub struct Database {
     /// caller can hold base and fork handles side by side and neither can
     /// accidentally write through the other.
     fork: Option<Arc<crate::fork::Fork>>,
+    /// Event-time ceiling, extra holes, and an optional holdout grant.
+    /// Default is unrestricted.
+    read_scope: ReadScope,
+    /// Seals of this open. Shared by [`Self::open_fork`], [`Self::base`], and
+    /// [`Self::with_scope`], and updated in place by [`Self::seal_range`].
+    pub(crate) seals: Arc<SealCache>,
 }
 
 impl std::fmt::Debug for Database {
@@ -234,6 +252,8 @@ impl std::fmt::Debug for Database {
             .field("backend", &self.backend)
             .field("read_only", &self.read_only)
             .field("fork", &self.fork.as_ref().map(|f| &f.name))
+            .field("event_ceiling_ns", &self.read_scope.event_ceiling_ns)
+            .field("seals", &self.seals.any())
             .finish()
     }
 }
@@ -278,6 +298,8 @@ impl Database {
             read_only: false,
             commit_hook: None,
             fork: None,
+            read_scope: ReadScope::default(),
+            seals: SealCache::empty(),
         })
     }
 
@@ -305,6 +327,8 @@ impl Database {
             read_only: false,
             commit_hook: None,
             fork: None,
+            read_scope: ReadScope::default(),
+            seals: SealCache::empty(),
         })
     }
 
@@ -336,11 +360,14 @@ impl Database {
                 supported: layout::READER_VERSION,
             });
         }
+        let seals = crate::seal::load_cache(&backend).await?;
         let db = Self {
             backend,
             read_only,
             commit_hook: None,
             fork: None,
+            read_scope: ReadScope::default(),
+            seals,
         };
         if !read_only {
             crate::transaction::recover(&db).await?;
@@ -369,11 +396,14 @@ impl Database {
                 supported: layout::READER_VERSION,
             });
         }
+        let seals = crate::seal::load_cache(&backend).await?;
         let db = Self {
             backend,
             read_only,
             commit_hook: None,
             fork: None,
+            read_scope: ReadScope::default(),
+            seals,
         };
         if !read_only {
             crate::transaction::recover(&db).await?;
@@ -488,16 +518,23 @@ impl Database {
             read_only: self.read_only,
             commit_hook: self.commit_hook.clone(),
             fork: Some(Arc::new(fork)),
+            read_scope: self.read_scope.clone(),
+            seals: Arc::clone(&self.seals),
         })
     }
 
     /// A handle on the base database, dropping any fork scope.
+    ///
+    /// The read scope and the seal cache stay. Dropping the fork does not
+    /// widen a decision-time ceiling or open a seal.
     pub fn base(&self) -> Self {
         Self {
             backend: self.backend.clone(),
             read_only: self.read_only,
             commit_hook: self.commit_hook.clone(),
             fork: None,
+            read_scope: self.read_scope.clone(),
+            seals: Arc::clone(&self.seals),
         }
     }
 
@@ -508,6 +545,83 @@ impl Database {
 
     pub fn fork_name(&self) -> Option<&str> {
         self.fork.as_ref().map(|f| f.name.as_str())
+    }
+
+    pub fn read_scope(&self) -> &ReadScope {
+        &self.read_scope
+    }
+
+    /// No ceiling, no extra holes, no grant, and no seal has been published
+    /// on this open. Table functions that cannot clip (a live tail) use this
+    /// rather than the arrival pin: a session can be unpinned and still sealed.
+    pub fn scope_is_unrestricted(&self) -> bool {
+        self.read_scope.is_hot_unrestricted(self.seals.any())
+    }
+
+    /// A new handle with `scope` in place of this one's. The seal cache is shared.
+    pub fn with_scope(&self, read_scope: ReadScope) -> Self {
+        let mut cloned = self.clone();
+        cloned.read_scope = read_scope;
+        cloned
+    }
+
+    /// Tighten the event-time ceiling. An existing ceiling is kept when it is
+    /// earlier.
+    pub fn with_event_ceiling(&self, ceiling_ns: i64) -> Self {
+        let mut scope = self.read_scope.clone();
+        scope.event_ceiling_ns = Some(match scope.event_ceiling_ns {
+            Some(existing) => existing.min(ceiling_ns),
+            None => ceiling_ns,
+        });
+        self.with_scope(scope)
+    }
+
+    pub fn with_holdout_grant(&self, grant: HoldoutGrant) -> Self {
+        let mut scope = self.read_scope.clone();
+        scope.holdout_grant = Some(grant);
+        self.with_scope(scope)
+    }
+
+    /// Same handle, writes refused. Holdout evaluation reads through this.
+    pub(crate) fn read_only_view(&self) -> Self {
+        let mut cloned = self.clone();
+        cloned.read_only = true;
+        cloned
+    }
+
+    /// Resolve the scope for one table.
+    ///
+    /// `Ok(None)` is the fast path: this table has no ceiling and no hole,
+    /// even if another table is sealed. A restrictive scope on a table with
+    /// no timestamp time column is an error.
+    pub fn enforcement(
+        &self,
+        table: &str,
+        schema: &arrow::datatypes::Schema,
+        time_col: Option<&str>,
+    ) -> Result<Option<Enforcement>> {
+        if self.read_scope.is_hot_unrestricted(self.seals.any()) {
+            return Ok(None);
+        }
+        let seals: Vec<_> = self.seals.snapshot().iter().map(Seal::span).collect();
+        let unit = time_col.and_then(|column| crate::scope::timestamp_unit(schema, column));
+        match self.read_scope.classify(table, unit, &seals)? {
+            None => Ok(None),
+            Some(visibility) => {
+                let time_column = time_col
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "table {table:?} has no time column, so a decision-time ceiling or \
+                             sealed range cannot be enforced"
+                        ))
+                    })?
+                    .to_string();
+                Ok(Some(Enforcement {
+                    time_column,
+                    visibility,
+                }))
+            }
+        }
     }
 
     /// Raise the database's recorded `min_reader_version`, never lowering it.
@@ -1008,7 +1122,7 @@ impl Database {
         }
     }
 
-    async fn entry(&self, name: &str) -> Result<CatalogEntry> {
+    pub(crate) async fn entry(&self, name: &str) -> Result<CatalogEntry> {
         if let Some(entry) = self.entry_opt(name).await? {
             return Ok(entry);
         }
@@ -1505,7 +1619,7 @@ impl Database {
     /// reservation: the question "did my write land?" is answered by the
     /// version chain, which is the only thing that can answer it honestly
     /// after a crash. Costs nothing when no key is supplied.
-    async fn idempotent_replay(
+    pub(crate) async fn idempotent_replay(
         &self,
         name: &str,
         opts: &WriteOptions,
@@ -1514,6 +1628,13 @@ impl Database {
             return Ok(None);
         };
         let entry = self.entry(name).await?;
+        // A name that still resolves to a pin has no fork-owned commit. Scanning
+        // the pinned base would treat one of its writes as this fork's replay.
+        if let Some(fork) = &self.fork
+            && fork.pin(entry.table_id).is_some()
+        {
+            return Ok(None);
+        }
         let head = self.head(name, entry.table_id).await?.head.sequence;
         let floor = head
             .saturating_sub(IDEMPOTENCY_LOOKBACK)
@@ -1527,6 +1648,24 @@ impl Database {
                 .and_then(|v| v.as_str())
                 == Some(key)
             {
+                let stored = manifest
+                    .user_meta
+                    .get(IDEMPOTENCY_FINGERPRINT_META_KEY)
+                    .and_then(|v| v.as_str());
+                let requested = opts.idempotency_fingerprint.as_deref();
+                let matches = match (stored, requested) {
+                    (Some(stored), Some(requested)) if stored == requested => true,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !matches {
+                    return Err(Error::IdempotencyConflict {
+                        key: key.to_string(),
+                        detail: "idempotency key was already used with a different request \
+                                 fingerprint"
+                            .into(),
+                    });
+                }
                 return Ok(Some(CommitResult {
                     table: name.to_string(),
                     sequence: manifest.sequence,
@@ -1860,6 +1999,9 @@ impl Database {
         opts: WriteOptions,
     ) -> Result<CommitResult> {
         self.ensure_writable("evolve_schema")?;
+        if let Some(replay) = self.idempotent_replay(name, &opts).await? {
+            return Ok(replay);
+        }
         let (entry, mut spec, head, parent_manifest) = self
             .write_prologue(name, OpKind::EvolveSchema, &opts)
             .await?;
@@ -2604,7 +2746,15 @@ impl Database {
             ));
         }
 
-        // Prune segments by manifest time range.
+        // Scope is a no-op when the handle is unrestricted and nothing is
+        // sealed. `enforcement` returns before taking the seal lock on that path.
+        let enforcement = self.enforcement(
+            &resolved.entry.name,
+            resolved.schema.as_ref(),
+            spec.time_column.as_deref(),
+        )?;
+
+        // Prune segments by manifest time range, then by the scope.
         let mut report = ScanReport {
             segments_total: resolved.manifest.segments.len(),
             ..Default::default()
@@ -2614,7 +2764,15 @@ impl Database {
             .segments
             .iter()
             .filter(|s| {
-                !time_filter_requested || s.overlaps_time(options.time_start, options.time_end)
+                if time_filter_requested && !s.overlaps_time(options.time_start, options.time_end) {
+                    return false;
+                }
+                if let Some(enf) = &enforcement
+                    && crate::scope::segment_hidden(s.time_range, &enf.visibility)
+                {
+                    return false;
+                }
+                true
             })
             .cloned()
             .collect();
@@ -2623,14 +2781,14 @@ impl Database {
         report.bytes_scanned = survivors.iter().map(|s| s.bytes).sum();
 
         // If the projection excludes the time column but a filter needs it,
-        // read it and drop it afterwards.
+        // read it and drop it afterwards. The scope filter is applied before
+        // the limit, so the limit counts visible rows.
         let mut effective_projection = options.projection.clone();
         let mut drop_time_col = false;
-        if let (Some(proj), Some(tc), true) = (
-            &mut effective_projection,
-            &spec.time_column,
-            time_filter_requested,
-        ) && !proj.contains(tc)
+        let needs_time_column = time_filter_requested || enforcement.is_some();
+        if let (Some(proj), Some(tc)) = (&mut effective_projection, &spec.time_column)
+            && needs_time_column
+            && !proj.contains(tc)
         {
             proj.push(tc.clone());
             drop_time_col = true;
@@ -2690,6 +2848,7 @@ impl Database {
 
         let time_col = spec.time_column.clone();
         let limit = options.limit;
+        let scope_filter = enforcement;
         let stream = stream::iter(futures_iter)
             .buffered(concurrency)
             .flat_map(|r: Result<Vec<RecordBatch>>| match r {
@@ -2700,6 +2859,16 @@ impl Database {
                 let out = match item {
                     Err(e) => Some(Err(e)),
                     Ok(mut batch) => {
+                        if let Some(enf) = &scope_filter {
+                            match crate::scope::filter_record_batch(
+                                &batch,
+                                &enf.time_column,
+                                &enf.visibility,
+                            ) {
+                                Ok(filtered) => batch = filtered,
+                                Err(e) => return future::ready(Some(Err(e))),
+                            }
+                        }
                         if let Some(lim) = limit {
                             if *rows >= lim {
                                 return future::ready(None);
@@ -3376,6 +3545,12 @@ fn child_manifest(
                 meta.insert(
                     crate::database::IDEMPOTENCY_META_KEY.to_string(),
                     serde_json::Value::String(key.clone()),
+                );
+            }
+            if let Some(fingerprint) = &opts.idempotency_fingerprint {
+                meta.insert(
+                    crate::database::IDEMPOTENCY_FINGERPRINT_META_KEY.to_string(),
+                    serde_json::Value::String(fingerprint.clone()),
                 );
             }
             meta

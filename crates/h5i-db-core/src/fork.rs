@@ -74,6 +74,34 @@ use crate::layout;
 /// survives in an immutable object even if the fork is later dropped.
 pub const FORKED_FROM_META_KEY: &str = "h5i.forked_from";
 
+/// Fork `user_meta` key recording created-table promotions, so a retry after
+/// the catalog move can return the first result. The fork entry itself is
+/// removed, which is what makes the table leave the fork.
+const PROMOTED_CREATED_META_KEY: &str = "h5i.promoted_created";
+
+fn shadow_promotion_matches(
+    manifest: &crate::manifest::VersionManifest,
+    fork_name: &str,
+    fork_table_id: Uuid,
+    fork_sequence: u64,
+) -> bool {
+    let Some(meta) = manifest.user_meta.get(FORKED_FROM_META_KEY) else {
+        return false;
+    };
+    let Some(stored_fork) = meta.get("fork").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    let Some(stored_id) = meta.get("fork_table_id").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    let Some(stored_seq) = meta.get("fork_sequence").and_then(|value| value.as_u64()) else {
+        return false;
+    };
+    stored_fork == fork_name
+        && stored_id == fork_table_id.to_string()
+        && stored_seq == fork_sequence
+}
+
 /// One pinned table inside a fork.
 ///
 /// "Base" means *the thing this fork forked from*, which is the database for a
@@ -752,6 +780,50 @@ impl crate::database::Database {
         as_of_ns: Option<i64>,
         user_meta: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Vec<Fork>> {
+        let at = match as_of_ns {
+            None => crate::database::ReadAt::Latest,
+            Some(ts) => crate::database::ReadAt::AsOf(ts),
+        };
+        self.create_forks_at(names, note, at, as_of_ns, user_meta)
+            .await
+    }
+
+    /// Create one fork pinned at an arbitrary read point.
+    ///
+    /// `ReadAt::Latest` and `ReadAt::AsOf` match [`Self::create_fork`].
+    /// `Version` and `Snapshot` skip a table that has no version there, and
+    /// record `as_of_ns` as `None` — the pins hold the sequences.
+    pub async fn create_fork_at(
+        &self,
+        name: &str,
+        note: Option<String>,
+        at: crate::database::ReadAt,
+        user_meta: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Fork> {
+        let recorded = match &at {
+            crate::database::ReadAt::AsOf(ts) => Some(*ts),
+            _ => None,
+        };
+        let mut created = self
+            .create_forks_at(
+                std::slice::from_ref(&name.to_string()),
+                note,
+                at,
+                recorded,
+                user_meta,
+            )
+            .await?;
+        Ok(created.pop().expect("one name in, one fork out"))
+    }
+
+    async fn create_forks_at(
+        &self,
+        names: &[String],
+        note: Option<String>,
+        at: crate::database::ReadAt,
+        as_of_ns: Option<i64>,
+        user_meta: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<Fork>> {
         self.ensure_writable("fork create")?;
         // Nesting is allowed (ROADMAP X-C1, superseding IX's "no fork-of-fork
         // in v1"): the pin set is keyed by table id, so a child pinning its
@@ -803,24 +875,19 @@ impl crate::database::Database {
             // so pinning the current version needs no manifest read at all.
             // Re-deriving it made "fork create copies nothing" true of bytes
             // written and false of bytes read: one full manifest per table.
-            let (sequence, checksum) = match as_of_ns {
-                None => {
+            // Every other read point resolves, then checksums that manifest.
+            let (sequence, checksum) = match &at {
+                crate::database::ReadAt::Latest => {
                     let head = self.head(&entry.name, entry.table_id).await?;
                     (head.head.sequence, head.head.manifest_checksum)
                 }
-                Some(ts) => {
-                    match self
-                        .resolve(&entry.name, crate::database::ReadAt::AsOf(ts))
-                        .await
-                    {
+                other => {
+                    match self.resolve(&entry.name, other.clone()).await {
                         Ok(resolved) => {
                             let seq = resolved.manifest.sequence;
-                            // An as-of pin lands on an arbitrary past version,
-                            // whose checksum no root of trust holds, so this
-                            // one genuinely has to be computed.
                             (seq, self.manifest_checksum_at(entry.table_id, seq).await?)
                         }
-                        // The table has no version at or before `ts`: it did
+                        // The table has no version at this read point: it did
                         // not exist yet, so the fork does not pin it.
                         Err(Error::VersionNotFound { .. }) => continue,
                         Err(e) => return Err(e),
@@ -848,12 +915,23 @@ impl crate::database::Database {
         // bare "table not found". Say it here instead. (A database with no
         // tables yet is a different thing and is allowed: that fork is empty
         // because the database is.)
-        if as_of_ns.is_some() && pins.is_empty() && !base_tables.is_empty() {
-            return Err(Error::invalid(format!(
-                "--as-of pins no version of any of the {} table(s) in this database: the \
-                 timestamp precedes their oldest retained commit",
-                base_tables.len()
-            )));
+        if !matches!(at, crate::database::ReadAt::Latest)
+            && pins.is_empty()
+            && !base_tables.is_empty()
+        {
+            let detail = if matches!(at, crate::database::ReadAt::AsOf(_)) {
+                format!(
+                    "--as-of pins no version of any of the {} table(s) in this database: the \
+                     timestamp precedes their oldest retained commit",
+                    base_tables.len()
+                )
+            } else {
+                format!(
+                    "read point pins no version of any of the {} table(s) in this database",
+                    base_tables.len()
+                )
+            };
+            return Err(Error::invalid(detail));
         }
 
         // Fence before publishing the fork, not after: a reader that cannot
@@ -1292,14 +1370,18 @@ impl crate::database::Database {
         self.ensure_base("fork promote")?;
         let _meta = self.backend().meta_lock().await?;
         let fork = load(self.backend(), fork_name).await?;
-        let fe = load_entry(self.backend(), &fork.name, table)
-            .await?
-            .ok_or_else(|| {
-                Error::invalid(format!(
+        let fe = match load_entry(self.backend(), &fork.name, table).await? {
+            Some(entry) => entry,
+            None => {
+                if let Some(result) = self.replay_created_promotion(&fork, table).await? {
+                    return Ok(result);
+                }
+                return Err(Error::invalid(format!(
                     "fork {fork_name:?} does not own table {table:?}; only tables a fork \
                      created or wrote to can be promoted"
-                ))
-            })?;
+                )));
+            }
+        };
 
         let fork_head_state = self.head(&fe.name, fe.table_id).await?;
         let fork_manifest = self
@@ -1326,6 +1408,20 @@ impl crate::database::Database {
         // new layout instead of being thrown away.
         let mut rebased_from = None;
         if base_head != origin.base_sequence {
+            if let Some(replay) = self
+                .replay_shadow_promote(
+                    &fork.name,
+                    table,
+                    &fe,
+                    origin.base_table_id,
+                    origin.base_sequence,
+                    base_head,
+                    fork_head_state.head.sequence,
+                )
+                .await?
+            {
+                return Ok(replay);
+            }
             let compaction_only = self
                 .intervening_commits_are_compaction(
                     origin.base_table_id,
@@ -1606,6 +1702,131 @@ impl crate::database::Database {
         Ok(())
     }
 
+    /// The current base head is this fork table's promotion, or only compaction
+    /// has happened since. A later non-compaction write is not a replay.
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_shadow_promote(
+        &self,
+        fork_name: &str,
+        table: &str,
+        fe: &ForkTableEntry,
+        base_table_id: Uuid,
+        origin_sequence: u64,
+        base_head: u64,
+        fork_sequence: u64,
+    ) -> Result<Option<PromoteResult>> {
+        let floor = base_head
+            .saturating_sub(crate::database::IDEMPOTENCY_LOOKBACK)
+            .max(origin_sequence);
+        let mut seq = base_head;
+        loop {
+            let manifest = self.manifest_at(base_table_id, seq).await?;
+            if shadow_promotion_matches(&manifest, fork_name, fe.table_id, fork_sequence) {
+                let rebased_from = manifest
+                    .user_meta
+                    .get(FORKED_FROM_META_KEY)
+                    .and_then(|value| value.get("rebased_onto"))
+                    .filter(|value| !value.is_null())
+                    .map(|_| origin_sequence);
+                return Ok(Some(PromoteResult {
+                    fork: fork_name.to_string(),
+                    table: table.to_string(),
+                    kind: ForkTableKind::Shadowed,
+                    base_sequence: manifest.sequence,
+                    rows: manifest.rows,
+                    segments_linked: 0,
+                    bytes_copied: 0,
+                    rebased_from,
+                }));
+            }
+            if manifest.op != crate::manifest::OpKind::Compact || seq == 0 || seq <= floor {
+                return Ok(None);
+            }
+            seq -= 1;
+        }
+    }
+
+    async fn record_created_promotion(
+        &self,
+        fork: &Fork,
+        table: &str,
+        table_id: Uuid,
+        sequence: u64,
+        rows: u64,
+    ) -> Result<()> {
+        let mut updated = fork.clone();
+        let entry = updated
+            .user_meta
+            .entry(PROMOTED_CREATED_META_KEY.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let Some(map) = entry.as_object_mut() else {
+            return Err(Error::corruption(
+                layout::fork_path(&fork.name).as_ref(),
+                "h5i.promoted_created is not an object",
+            ));
+        };
+        let next = serde_json::json!({
+            "table_id": table_id.to_string(),
+            "sequence": sequence,
+            "rows": rows,
+        });
+        if map.get(table) == Some(&next) {
+            return Ok(());
+        }
+        map.insert(table.to_string(), next);
+        store(self.backend(), &updated.seal()?).await
+    }
+
+    async fn replay_created_promotion(
+        &self,
+        fork: &Fork,
+        table: &str,
+    ) -> Result<Option<PromoteResult>> {
+        let Some(record) = fork
+            .user_meta
+            .get(PROMOTED_CREATED_META_KEY)
+            .and_then(|value| value.get(table))
+        else {
+            return Ok(None);
+        };
+        let Some(table_id) = record
+            .get("table_id")
+            .and_then(|value| value.as_str())
+            .and_then(|text| Uuid::parse_str(text).ok())
+        else {
+            return Ok(None);
+        };
+        let sequence = record
+            .get("sequence")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let rows = record
+            .get("rows")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let present = match fork.parent.as_deref() {
+            None => crate::catalog::load_entry(self.backend(), table)
+                .await?
+                .is_some_and(|entry| entry.table_id == table_id),
+            Some(parent) => load_entry(self.backend(), parent, table)
+                .await?
+                .is_some_and(|entry| entry.table_id == table_id),
+        };
+        if !present {
+            return Ok(None);
+        }
+        Ok(Some(PromoteResult {
+            fork: fork.name.clone(),
+            table: table.to_string(),
+            kind: ForkTableKind::Created,
+            base_sequence: sequence,
+            rows,
+            segments_linked: 0,
+            bytes_copied: 0,
+            rebased_from: None,
+        }))
+    }
+
     /// Promote a table the fork created: it has no base counterpart and every
     /// segment is already under its own prefix, so this is purely a move
     /// between catalogs. No data is touched and no version is created.
@@ -1629,6 +1850,40 @@ impl crate::database::Database {
                 .is_some(),
         };
         if taken {
+            let existing_id = match &target_fork {
+                None => crate::catalog::load_entry(self.backend(), &fe.name)
+                    .await?
+                    .map(|entry| entry.table_id),
+                Some(parent) => load_entry(self.backend(), parent, &fe.name)
+                    .await?
+                    .map(|entry| entry.table_id),
+            };
+            if existing_id == Some(fe.table_id) {
+                self.record_created_promotion(
+                    fork,
+                    &fe.name,
+                    fe.table_id,
+                    manifest.sequence,
+                    manifest.rows,
+                )
+                .await?;
+                if load_entry(self.backend(), &fork.name, &fe.name)
+                    .await?
+                    .is_some()
+                {
+                    remove_entry(self.backend(), &fork.name, &fe.name).await?;
+                }
+                return Ok(PromoteResult {
+                    fork: fork.name.clone(),
+                    table: fe.name.clone(),
+                    kind: ForkTableKind::Created,
+                    base_sequence: manifest.sequence,
+                    rows: manifest.rows,
+                    segments_linked: 0,
+                    bytes_copied: 0,
+                    rebased_from: None,
+                });
+            }
             return Err(Error::TableExists {
                 name: fe.name.clone(),
             });
@@ -1661,6 +1916,14 @@ impl crate::database::Database {
                 create_entry(self.backend(), parent, &entry).await?;
             }
         }
+        self.record_created_promotion(
+            fork,
+            &fe.name,
+            fe.table_id,
+            manifest.sequence,
+            manifest.rows,
+        )
+        .await?;
         remove_entry(self.backend(), &fork.name, &fe.name).await?;
         Ok(PromoteResult {
             fork: fork.name.clone(),

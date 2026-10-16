@@ -69,6 +69,15 @@ impl TableFunctionImpl for TailFunc {
             .unwrap_or(250)
             .max(10);
         self.pin.check_usable("tail")?;
+        // A seal with no decision-time cutoff still restricts the handle.
+        // `check_usable` only sees the pin, and `tail` follows the head.
+        if !self.db.scope_is_unrestricted() {
+            return Err(DataFusionError::Plan(
+                "tail() follows the head and cannot apply a decision-time ceiling or a sealed \
+                 range, so it is refused on a restricted handle"
+                    .into(),
+            ));
+        }
         // An explicit `after_version` is a read point like any other: a pinned
         // session chooses where reading starts, and nothing inside it may pick
         // a different one. Without this, `tail('t', 0)` replayed the whole

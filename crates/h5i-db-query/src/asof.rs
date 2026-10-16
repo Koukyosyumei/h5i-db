@@ -988,23 +988,20 @@ impl TableFunctionImpl for AsOfJoinFunc {
             inner: false,
         };
 
-        self.pin.check_usable("asof_join")?;
         let left = block_on(self.db.resolve(&left_table, self.pin.read_at()))
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
         let right = block_on(self.db.resolve(&right_table, self.pin.read_at()))
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
         let (schema, right_kept) = asof_output_schema(&left.schema, &right.schema, &options)?;
         Ok(Arc::new(AsOfTableProvider {
-            left: Arc::new(H5iTableProvider::new(
-                left,
-                self.url.clone(),
-                self.metrics.clone(),
-            )),
-            right: Arc::new(H5iTableProvider::new(
-                right,
-                self.url.clone(),
-                self.metrics.clone(),
-            )),
+            left: Arc::new(
+                H5iTableProvider::new(left, self.url.clone(), self.metrics.clone())
+                    .with_database(Arc::clone(&self.db)),
+            ),
+            right: Arc::new(
+                H5iTableProvider::new(right, self.url.clone(), self.metrics.clone())
+                    .with_database(Arc::clone(&self.db)),
+            ),
             options,
             schema,
             right_kept,

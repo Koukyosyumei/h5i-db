@@ -1,115 +1,40 @@
-# h5i-db
+<p align="center">
+  <img src="./docs/_static/logo.png" alt="h5i-db logo" height="126">
+</p>
 
-<a href="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml/badge.svg"></a>
-<a href="https://pepy.tech/projects/h5i-db"><img alt="downloads" src="https://static.pepy.tech/personalized-badge/h5i-db?period=total&units=INTERNATIONAL_SYSTEM&left_color=GRAY&right_color=GREEN&left_text=downloads"></a>
-<a href="https://github.com/h5i-dev/h5i-db/blob/main/LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/h5i-dev/h5i-db?color=blue"></a>
+<p align="center">
+  <a href="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://pepy.tech/projects/h5i-db"><img alt="downloads" src="https://static.pepy.tech/personalized-badge/h5i-db?period=total&units=INTERNATIONAL_SYSTEM&left_color=GRAY&right_color=GREEN&left_text=downloads"></a>
+  <a href="https://github.com/h5i-dev/h5i-db/blob/main/LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/h5i-dev/h5i-db?color=blue"></a>
+</p>
 
-**English** · [Español](README.es.md) · [Français](README.fr.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
+<p align="center"><b>English</b> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-**A fast, agent-native time-series *d*atabase and *b*acktesting engine for quant research.
-Embedded, written in Rust.**
+<h1 align="center">Backtesting on Versioned Market Data</h1>
 
-- **Fast for time-series shape:** over 4.5× faster than DuckDB and Polars
-  on OHLCV+VWAP rollups over 20M rows.
-- **Native time-series SQL:** ASOF join, timezone-aware `time_bucket`,
-  gapfill/resample, rolling windows, `vwap`, `ewma`.
-- **Point-in-time reads:** pin a decision time and the frame that reaches
-  pandas cannot contain rows from after it. No lookahead bias, by construction.
-- **Efficient event-driven backtester:** 3.05M events/s through
-  the replay kernel, 11.7× NautilusTrader and 31× LEAN on a shared
-  top-of-book workload.
-- **Native venue support:** [Kalshi](#data-sources), [Polymarket](#data-sources), [Hyperliquid](#data-sources), [Binance](#data-sources) and more.
-- **Professional statistical analysis:** factor and performance metrics at
-  `alphalens` and `empyrical` parity, plus deflated Sharpe and
-  overfitting-probability detection.
-- **In-terminal notebooks:** agents and humans explore data without leaving the
-  shell. `h5i-db nb view` runs ordinary `.ipynb` files on a real Jupyter kernel
-  and draws matplotlib plots inline.
-- **Fork a database in milliseconds:** forks share data instead of copying it. 
-  Agents can run wide trial-and-error loops (fork, mutate, evaluate, discard) 
-  at almost zero cost.
-- **Every write is an atomic, versioned commit:** any past version reads in
-  O(1), so a bad ingest (human or agent) is one `restore` away from undone.
-- **Safety policies for agent writes:** previewable mutations, policy gates,
-  fail-closed constraints that block destructive operations, and an audit
-  trail of what changed and why.
+**h5i-db** is an embedded time-series database and event-driven backtester for quant research, written in Rust. Use it from Python, and review what your agents ran in a local web UI.
 
-📖 **[Documentation](https://db.h5i.dev/manual/)** · [Backtesting](https://db.h5i.dev/manual/backtest/) · [Quant](https://db.h5i.dev/manual/quant/) · [Python API](https://db.h5i.dev/api/) ·
-[Cookbook](https://github.com/h5i-dev/h5i-db-cookbook) · [Agent skill](skills/h5i-db/SKILL.md)
+- **Backtest from Python:** `pip install h5i-db`, no server. Replays 3.05M events/s, and every run is pinned to a data version, so it can be re-executed and verified.
+- **No lookahead by construction:** pin a decision time, and no row from after it can reach your frame.
+- **Cheap experiments:** each run executes in its own fork of the database. A parameter sweep is one fork per trial, ranked out of sample, with no data copied.
+- **Review in the browser:** `h5i-db ui` puts trials, forks, versions and pending writes on one page, ordered by what needs a human next.
+
+```bash
+pip install h5i-db                              # Python library: database + backtester
+cargo install h5i-db-cli                        # CLI and web UI
+h5i-db ui market.db                             # review surface on 127.0.0.1:7351
+npx skills add h5i-dev/h5i-db                   # agent skill (Claude Code, Codex, Cursor, …)
+```
 
 ---
 
-## Quickstart
-
-**CLI**
-
-```bash
-cargo install h5i-db-cli
-```
-
-```bash
-h5i-db init market.db
-h5i-db create-table market.db trades --like ticks.parquet --time-column ts
-h5i-db ingest market.db trades ticks.parquet --idempotency-key load-1
-h5i-db context market.db                                           # orient in one call
-h5i-db query market.db "SELECT symbol, vwap(price,size) FROM trades GROUP BY symbol"
-h5i-db query market.db "SELECT count(*) FROM trades" \
-  --decision-time 2026-07-01T00:00:00Z                             # the future is unreadable
-h5i-db ui market.db                                                # review + experiments surface
-```
-
-**Notebook in the terminal**
-
-```bash
-h5i-db nb new research.ipynb --kernel python3 --db market.db   # the database SQL cells query
-h5i-db nb view research.ipynb        # ⏎ edit · e run · a insert · ? all keys · q quit
-h5i-db nb watch research.ipynb --split right   # follow along while an agent runs cells
-h5i-db nb export research.ipynb --to html
-```
-
-It writes a real `.ipynb`, so JupyterLab opens the same file. A Python kernel
-needs `pip install ipykernel`. Agents drive the same session non-interactively
-with `h5i-db nb exec`.
-
-<p align="center">
-  <img src="./docs/_static/in-terminal-notebook-demo.png" width="99%" />
-</p>
-
-**Python Library for DataFrames and SQL**
-
-```bash
-pip install h5i-db
-```
+## 1. Backtest in Python
 
 ```python
-import pyarrow as pa
 import h5i_db
-
-db = h5i_db.Database("market.db", create=True)
-
-db.create_table(
-    "trades",
-    pa.schema([("ts", pa.timestamp("us")), ("symbol", pa.string()), ("price", pa.float64())]),
-    time_column="ts",
-)
-db.append("trades", pa.table({
-    "ts": pa.array([1_700_000_000_000_000, 1_700_000_060_000_000], pa.timestamp("us")),
-    "symbol": ["AAPL", "MSFT"], "price": [187.4, 411.2],
-}))
-
-df = db.sql("SELECT symbol, avg(price) AS px FROM trades GROUP BY symbol").to_pandas()
-# df = db.table("trades").group_by("symbol").agg(px=col("price").mean()).to_pandas()
-old = db.read("trades", version=1)                # time travel: read any past version
-
-plan = db.plan_delete_range("trades", 1_700_0_000_000)
-print(plan.summary)                               # preview the mutation before it lands
-plan.apply()
-```
-
-**Python Library for Backtesting** (same install, no server)
-
-```python
 from h5i_db import backtest
+
+db = h5i_db.Database("market.db")
 
 config = backtest.BacktestConfig(
     run_id="momentum-001",
@@ -129,9 +54,7 @@ result.tearsheet("run.html")
 result.verify()                   # re-execute the stored config and compare
 ```
 
-A parameter grid becomes one fork per trial, and the winner is ranked without
-an export step. Give it explicit train and holdout windows and every trial runs
-both phases, so the leaderboard can be read out of sample:
+A parameter grid becomes one fork per trial. Give it train and holdout windows, and the leaderboard is read out of sample:
 
 ```python
 board = backtest.study(
@@ -143,198 +66,51 @@ board = backtest.study(
 ).leaderboard("holdout_final_cash")
 ```
 
-**Agent skill** (Claude Code, Codex, Cursor, …)
+- **Venues:** Kalshi, Polymarket, Hyperliquid, Binance, Limitless, Opinion, Manifold, and any OHLCV or trade dump. Loaders read files you already have; see the [venue guide](crates/h5i-db-venues/README.md).
+- **Statistics:** factor and performance metrics at `alphalens` and `empyrical` parity, plus deflated Sharpe and probability of backtest overfitting.
+- **Data in and out:** `db.append`, `db.sql(...)`, time-series SQL (ASOF join, `time_bucket`, `vwap`, rolling windows), and any past version through `db.read(..., version=n)`.
 
-```bash
-npx skills add h5i-dev/h5i-db        # installs the h5i-db skill from skills/h5i-db/
-```
-
-**See it work**
-
-```bash
-python examples/backtest_report_demo.py
-```
+`python examples/backtest_report_demo.py` writes a self-contained HTML report:
 
 <p align="center">
   <img src="./docs/_static/report-screenshot-1.png" width="49%" />
   <img src="./docs/_static/report-screenshot-2.png" width="49%" />
-  <br />
-  <img src="./docs/_static/report-screenshot-3.png" width="49%" />
-  <img src="./docs/_static/report-screenshot-4.png" width="49%" />
 </p>
 
 ---
 
-## Why it's fast
+## 2. Research lab
 
-- **Manifest pruning:** every version's manifest carries per-segment time
-  ranges and column min/max. Narrow queries prune whole segments before a
-  single file is opened.
-- **Declared sort order:** segments are stored time-sorted and the query
-  layer tells DataFusion so. OHLCV rollups stream instead of sorting 20M rows
-  first (every baseline pays that sort), and the ASOF join is sort-free.
-- **Immutable segments:** footer metadata is cached unconditionally (sound
-  because segments never change), cutting ~40% off warm scans.
-- **Version-aware aggregate states:** OHLCV/VWAP rollups persist mergeable
-  states per immutable segment; re-queries merge states in milliseconds
-  instead of recomputing, scanning only newly appended segments.
-- **Lazy replay:** the backtest kernel pulls records one at a time instead of
-  materializing a window, so memory stays flat whether a run replays a day or a
-  hundred million events.
-- **Indexed order matching:** resting orders are keyed by market and price, so a
-  new print wakes only the orders it actually crosses instead of rescanning
-  every open one.
-
----
-
-## Why for agents
-
-- **Reproducible inputs:** every read resolves to a version, so "which data did
-this run see" has an answer, and re-running against that version is O(1) rather
-than an archaeology project.
-- **Don't let a result destroy the context window.** `H5I_DB_PROFILE=agent` caps
-every query and spills the rest to Parquet, reporting the true row count and
-where the withheld rows live.
-- **Errors that can be acted on:** the stderr envelope carries `next_actions`
-(runnable commands), `did_you_mean` for typos, and a `retryable` flag.
-- **Branch without copying.** `fork` opens a writable workspace over a pinned
-view of every table and duplicates no data, so an edit or an experiment costs
-one small file and is as cheap to discard as to keep.
-- **Privilege control.** Mutations preview through `plan`/`apply` and policy can
-require that gate; `--idempotency-key` makes a retried ingest replay; an opt-in 
-`data-policy` rejects malformed rows fail-closed.
-- **A backtest run is a branch.** Each run executes inside its own
-fork and writes its orders, fills, positions and equity curve there as ordinary
-tables. So two runs diff at fill level with `fork_diff`, a whole sweep aggregates
-in one cross-fork query, the one worth keeping is `promote`d and the rest are
-dropped.
-- **In-terminal notebooks, for the reasons quants already use Jupyter.** Partial
-execution, a kernel that holds state between steps, results recorded beside the
-code that made them. An agent gets all three from the command line, through
-`nb exec` and `nb run --cells 3-7`.
-- **The review surface routes attention rather than ranking.** `h5i-db ui` orders
-trials by what needs a human next: decision required, then failed or warned, then
-finished and unseen, then running, then seen. Scanning a list does not mark work
-reviewed; a trial counts as seen only when its detail is opened.
-
----
-
-## Data sources
-
-Loaders read files and payloads you already have. Nothing here fetches, so
-credentials, retries and rate limits stay in your script.
-
-| Source | Order book | Trades | Bars | Also |
-|---|---|---|---|---|
-| Kalshi | ✓ | ✓ | ✓ | settlement |
-| Polymarket | ✓ | ✓ | derived | settlement, complete-set mint and redeem |
-| Hyperliquid | ✓ | ✓ | ✓ | funding, mark and oracle prices, leverage caps |
-| Limitless | ✓ | ✓ | derived | |
-| Opinion | ✓ | ✓ | derived | |
-| Manifold | n/a | ✓ | derived | settlement |
-| Binance | | ✓ | ✓ | spot and futures bulk dumps |
-| Any OHLCV export | | | ✓ | a broker CSV, `yfinance`, Stooq |
-| Any trade dump | | ✓ | derived | |
-| Published series | | | | reference prices, for a rate or an index |
-| Corporate actions | | | | splits, dividends, delistings |
-
-`derived` means bars are aggregated from that source's own prints rather than
-fetched, so gaps stay visible as missing bars. `n/a` means the venue has no
-such concept: Manifold is an automated market maker, so it has prints but no
-book. See [venue guide](crates/h5i-db-venues/README.md) for the detail.
-
----
-
-## When *not* to use h5i-db
-
-- **Distributed, multi-terabyte warehouses:** single-node and embedded by
-  design. Reach for ClickHouse, Snowflake or a lakehouse.
-- **OLTP or high-concurrency serving:** one writer at a time, no row-level
-  MVCC, no interactive transactions. Use Postgres.
-- **Sub-microsecond tick capture:** the write cadence this is built for is
-  minute bars, end-of-day, and vendor files, not the capture layer itself.
-  That is kdb+ territory.
-- **Databases with no time column:** the whole design assumes a time index;
-  without one you lose pruning, the ASOF join, and point-in-time reads.
-- **Live trading:** the backtester never routes a real order. There are no
-  brokerage adapters, no portfolio optimiser and no plotting API; the boundary
-  is simulation and evaluation.
-
----
-
-## Benchmark
-
-Full methodology and results in [benchmarks](benchmarks).
-
-**Database**
-
-| | DuckDB | Polars | pandas | PyArrow | ArcticDB | **h5i-db** |
-|---|---|---|---|---|---|---|
-| User-facing versioning / time travel | ✗¹ | ✗ | ✗ | ✗ | ✓ | ✓ (O(1) version reads) |
-| SQL joins/windows/CTEs | ✓ | partial | ✗ | ✗ | ✗ | ✓ (DataFusion) |
-| ASOF join | ✓ | ✓ | ✓ | ✗² | ✗ | ✓⁴ (sort-free on sorted storage) |
-| Previewable mutations (plan/apply) | ✗ | ✗ | ✗ | ✗ | ✗ | ✓, policy-enforceable |
-| Concurrent writers | MVCC | n/a | n/a | n/a | unsafe³ | CAS + explicit conflict |
-| 20M-row narrow time-range scan | 45.5 ms | 28.1 ms | 23.9 ms | 22.8 ms | **4.2 ms**⁵ | 10.0 ms |
-| 20M-row 1-min OHLCV+VWAP | 7237 ms | 7309 ms | 5115 ms | 7121 ms | 3504 ms | **1558 ms** |
-| 20M-row ASOF join (by symbol) | 11566 ms | **1485 ms** | 6624 ms | ✗² | 7008 ms | 1548 ms |
-
-¹ `AT (VERSION …)` syntax exists but native storage rejects it.
-² Experimental `join_asof` exists but is ~1000× slower, impractical at this scale.
-³ Documented single-writer-per-symbol assumption.
-⁴ Native `ASOF JOIN … MATCH_CONDITION` SQL syntax and an `asof_join(...)`
-  table function (SQL and Python).
-⁵ ArcticDB's native time index wins narrow point reads from its own LMDB
-  store; h5i-db's manifest pruning is second and beats every general engine.
-
-**Backtesting**
-
-| engine | measured boundary | median | throughput |
-|---|---|---:|---:|
-| **h5i-db** | decoded records through the replay kernel | **65.7 ms** | **3.05 M events/s** |
-| h5i-db `wide` | same kernel, 128-bit fixed point | 94 ms⁷ | 2.13 M events/s⁷ |
-| **h5i-db** | same kernel, strategy as a Python callback per event | 278 ms⁶ | 719 k events/s⁶ |
-| h5i-db `wide` | same, 128-bit fixed point | 306 ms⁶ ⁷ | 653 k events/s⁶ ⁷ |
-| **h5i-db** | full persisted run: scan, decode, fork, replay, write | 280 ms | 713 k events/s |
-| h5i-db `wide` | same, 128-bit fixed point | 280 ms | 713 k events/s |
-| NautilusTrader 1.230.0 | in-memory objects through `BacktestEngine.run()` | 767 ms | 261 k events/s |
-| LEAN `11ba019f6` | first `Slice` callback to `OnEndOfAlgorithm`, disk-fed | 2,033 ms | 98.4 k events/s |
-
-Medians of three fresh-process runs after one warm-up; each adapter verifies it
-saw all 200k events and submitted all 200 orders. The measured boundaries differ,
-as the column says, and the benchmark checks counts rather than PnL equivalence.
-⁶ The other rows never call Python; this one crosses into it per event, as
-Nautilus does. Callback against callback the gap is 3.1×, not 13×. Derived
-(native kernel plus measured boundary cost), not timed directly.
-⁷ `--features wide`, off by default; see
-[Precision and range](https://db.h5i.dev/manual/backtest/). Derived, not timed
-directly; method in [RESULTS.md](benchmarks/backtest_compare/RESULTS.md).
-
----
-
-## Development
+`apps/lab` is a ledger for one person running many agents against one database. An agent submits a strategy as a short rule program with JSON parameters. A worker backtests it on the agent's fork through the service API and records the trial whether the run succeeded or not. The protocol is an h5i-app kernel with Lean proofs: every trial is counted, an agent cannot read past its decision time or into the sealed holdout, the holdout is evaluated once, and only a human promotes.
 
 ```bash
-# One package at a time with capped threads: several suites start DataFusion
-# sessions and tokio runtimes, so running the whole workspace at once can
-# exhaust memory on a small machine.
-for pkg in h5i-db-core h5i-db-query h5i-db-backtest h5i-db-cli h5i-db-ui; do
-  cargo test -p $pkg -- --test-threads=2
-done
-cargo run -p h5i-db-bench --profile bench-fast -- --trades 1000000
-cargo run -p h5i-db-bench --profile bench-fast --bin h5i-db-fork-bench
-python3 benchmarks/backtest_compare/run.py \
-  --output benchmarks/backtest_compare/results.json   # vs NautilusTrader and LEAN
+apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
+apps/lab/demo.sh down
 ```
 
-Workspace crates under `crates/`: `core` (versioned storage kernel), `query`
-(DataFusion layer), `backtest` (replay kernel, venue models, settlement),
-`venues` (Kalshi, Polymarket, Hyperliquid loaders), `cli` (the agent-facing
-binary), `ui` (review surface), `observability`, `python`
-(`pip install h5i-db`), `bench`.
+<p align="center">
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
+</p>
+
+- **Review queue:** frozen strategies with their code, parameters, equity curve, costs and holdout result, to promote, reject or comment on.
+- **Leaderboard:** families ranked by deflated Sharpe, which drops as a family tries more variants. Raw returns stay on the trials.
+- **Trials:** every counted run with return, max drawdown, Sharpe, fills, costs and an equity sparkline, all from the engine's fills.
+- **Alerts:** reads past a decision time, refused backtests, a spent holdout.
+
+On your own data the lab needs PostgreSQL and an h5i-db database with an instruments catalog, book snapshots and a seal over the holdout span. [apps/lab/README.md](apps/lab/README.md) lists the settings, the strategy language and what the proofs cover.
 
 ---
 
-## License
+## 3. Documentation
+
+- [Manual](https://db.h5i.dev/manual/): [Backtesting](https://db.h5i.dev/manual/backtest/), [Quant](https://db.h5i.dev/manual/quant/), [CLI](https://db.h5i.dev/manual/cli/), [Notebooks](https://db.h5i.dev/manual/notebooks/)
+- [Python API](https://db.h5i.dev/api/) · [Cookbook](https://github.com/h5i-dev/h5i-db-cookbook) · [Agent skill](skills/h5i-db/SKILL.md)
+- [Benchmarks](docs/BENCHMARKS.md): against DuckDB, Polars, ArcticDB, NautilusTrader and LEAN
+- [Why h5i-db](docs/OVERVIEW.md): what it gives agents, and when not to use it
+- [Development](docs/DEVELOPMENT.md) · [Design](DESIGN.md) · [Operations](docs/OPERATIONS.md) · [Roadmap](docs/ROADMAP.md)
+
+---
+
+## 4. License
 
 Apache-2.0. See [LICENSE](./LICENSE).

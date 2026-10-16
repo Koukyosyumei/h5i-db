@@ -32,6 +32,9 @@
 //!
 //! # What it refuses
 //!
+//! A handle already opened on one fork refuses `forks()`: the function reads
+//! every sibling, which that handle is not allowed to see. Call it on the base.
+//!
 //! Forks whose schemas for the table disagree are refused rather than coerced.
 //! Cross-branch comparison assumes a common relation, and the workloads that
 //! need it (Monte Carlo simulation, MCTS) perform no schema changes — the ones
@@ -135,12 +138,20 @@ impl TableFunctionImpl for ForkScanFunc {
                 )
             })?)?),
         };
-        self.pin.check_usable("forks")?;
+        // A fork handle must not open every sibling. The base session is the
+        // one that compares branches.
+        if self.db.fork_name().is_some() {
+            return Err(DataFusionError::Plan(
+                "forks() reads every fork of the base database, so a handle opened on one fork \
+                 refuses it; query that fork's tables by name"
+                    .into(),
+            ));
+        }
         let at = self.pin.read_at();
 
         let resolved = block_on(resolve_across_forks(&self.db, table, requested, at))
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        let plan = build_union_plan(table, resolved, &self.url, &self.metrics)?;
+        let plan = build_union_plan(table, resolved, &self.url, &self.metrics, &self.db)?;
         Ok(Arc::new(ViewTable::new(plan, None)))
     }
 }
@@ -200,6 +211,7 @@ fn build_union_plan(
     resolved: Vec<(String, ResolvedTable)>,
     url: &ObjectStoreUrl,
     metrics: &ScanMetricsCollector,
+    db: &Arc<Database>,
 ) -> DfResult<LogicalPlan> {
     let (first_name, template) = resolved
         .first()
@@ -255,11 +267,10 @@ fn build_union_plan(
         let mut resolved_group = template.clone();
         resolved_group.manifest.segments = segments;
         resolved_group.manifest.recompute_rollups();
-        let provider = Arc::new(H5iTableProvider::new(
-            resolved_group,
-            url.clone(),
-            metrics.clone(),
-        ));
+        let provider = Arc::new(
+            H5iTableProvider::new(resolved_group, url.clone(), metrics.clone())
+                .with_database(Arc::clone(db)),
+        );
         let scan = LogicalPlanBuilder::scan(table, provider_as_source(provider), None)?;
 
         let branch = match forks.split_first() {

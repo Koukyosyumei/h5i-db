@@ -180,6 +180,9 @@ impl Database {
                 "empty range: start {start} must be < end {end}"
             )));
         }
+        // A fork plan must land on the copy-on-write shadow. Resolving first
+        // would plan against the pinned base table and apply would publish there.
+        self.entry_for_write(name).await?;
         let op = if new_batches.is_empty() {
             OpKind::DeleteRange
         } else {
@@ -340,6 +343,9 @@ impl Database {
         batches: Vec<RecordBatch>,
         opts: WriteOptions,
     ) -> Result<MutationPlan> {
+        // See `plan_replace_range`: the first plan in a fork materializes the
+        // shadow so the plan's table id is the fork's, not the base's.
+        self.entry_for_write(name).await?;
         let resolved = self.resolve(name, ReadAt::Latest).await?;
         let spec = &resolved.spec;
         let schema = resolved.schema.clone();
@@ -448,7 +454,11 @@ impl Database {
 
     /// Load a plan by table and id.
     pub async fn load_plan(&self, table: &str, plan_id: Uuid) -> Result<MutationPlan> {
-        let resolved_entry = catalog_entry(self, table).await?;
+        let Some(resolved_entry) = plan_table(self, table).await? else {
+            return Err(Error::invalid(format!(
+                "plan {plan_id} not found for table {table:?}"
+            )));
+        };
         let path = plan_path(resolved_entry.table_id, plan_id);
         let bytes = self.backend().get_opt(&path).await?.ok_or_else(|| {
             Error::invalid(format!("plan {plan_id} not found for table {table:?}"))
@@ -458,7 +468,9 @@ impl Database {
 
     /// List stored plans for a table.
     pub async fn list_plans(&self, table: &str) -> Result<Vec<MutationPlan>> {
-        let entry = catalog_entry(self, table).await?;
+        let Some(entry) = plan_table(self, table).await? else {
+            return Ok(Vec::new());
+        };
         let metas = self.backend().list(&plans_prefix(entry.table_id)).await?;
         let mut out = Vec::new();
         for m in metas {
@@ -477,6 +489,27 @@ impl Database {
             return Err(Error::ReadOnly {
                 op: "apply_plan".into(),
             });
+        }
+        // A retry after a successful apply finds the commit by the key the
+        // plan carried, even when the head has moved past `base_version`.
+        // No key keeps today's compare-and-swap.
+        let replay_opts = crate::database::WriteOptions {
+            idempotency_key: plan
+                .user_meta
+                .get(crate::database::IDEMPOTENCY_META_KEY)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            idempotency_fingerprint: plan
+                .user_meta
+                .get(crate::database::IDEMPOTENCY_FINGERPRINT_META_KEY)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            ..Default::default()
+        };
+        if replay_opts.idempotency_key.is_some()
+            && let Some(replay) = self.idempotent_replay(&plan.table, &replay_opts).await?
+        {
+            return Ok(replay);
         }
         plan.verify("plan")?;
         if plan.is_expired() {
@@ -532,7 +565,11 @@ impl Database {
 
     /// Drop a plan; its unpublished segments become vacuumable orphans.
     pub async fn discard_plan(&self, table: &str, plan_id: Uuid) -> Result<()> {
-        let entry = catalog_entry(self, table).await?;
+        let Some(entry) = plan_table(self, table).await? else {
+            return Err(Error::invalid(format!(
+                "plan {plan_id} not found for table {table:?}"
+            )));
+        };
         self.backend()
             .delete(&plan_path(entry.table_id, plan_id))
             .await
@@ -560,8 +597,17 @@ impl Database {
     }
 }
 
-async fn catalog_entry(db: &Database, table: &str) -> Result<crate::catalog::CatalogEntry> {
-    crate::catalog::load_entry(db.backend(), table)
-        .await?
-        .ok_or_else(|| Error::table_not_found(table))
+/// The table plans are stored against.
+///
+/// Inside a fork, a name that still resolves to its pin has no shadow and
+/// therefore no plans of its own. Returning `None` keeps a fork from listing
+/// or applying a plan that belongs to the base table.
+async fn plan_table(db: &Database, table: &str) -> Result<Option<crate::catalog::CatalogEntry>> {
+    let entry = db.entry(table).await?;
+    if let Some(fork) = db.fork()
+        && fork.pin(entry.table_id).is_some()
+    {
+        return Ok(None);
+    }
+    Ok(Some(entry))
 }
