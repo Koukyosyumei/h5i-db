@@ -915,7 +915,7 @@ Ordinary reads exclude every seal. `Database::begin_holdout` is the only constru
 
 ### 14.8 Reconciliation
 
-`Service::export_state` returns one JSON document, arrays ordered by name and id: forks (pins, own heads), versions of each fork-owned table, trials, holdout evaluations, promotions (from `h5i.forked_from` on base manifests). `Service::reconcile` diffs that document against a ledger snapshot of the same shape. The diff lists missing, extra, and field-level mismatches. The CLI command is `h5i-db reconcile <db> --ledger <file>`. Exit 0 when the two agree, exit 2 when they do not, the diff on stdout as JSON.
+`Service::export_state` returns one JSON document, arrays ordered by name and id: forks (pins, own heads), versions of each fork-owned table, trials, holdout evaluations, promotions (from `h5i.forked_from` on base manifests). A trial table that a fork promoted now lives on the base; its rows are still listed under that fork. `Service::reconcile` diffs that document against a ledger snapshot of the same shape. The diff lists missing, extra, and field-level mismatches. The CLI command is `h5i-db reconcile <db> --ledger <file>`. Exit 0 when the two agree, exit 2 when they do not, the diff on stdout as JSON.
 
 ### 14.9 Compatibility
 

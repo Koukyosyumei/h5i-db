@@ -6,6 +6,9 @@ use h5i_db_core::{Database, ReadAt};
 
 use crate::error::{Result, engine};
 use crate::handle::read_trials;
+
+/// The backtest's trial table (`h5i_db_backtest::schema::TRIAL`).
+const TRIAL_TABLE: &str = h5i_db_backtest::schema::TRIAL;
 use crate::types::{
     FieldMismatch, ForkState, HoldoutReceipt, OwnedHead, PinReceipt, PromotionState, ReconcileDiff,
     StateDocument, TrialState, VersionState,
@@ -66,6 +69,11 @@ pub async fn export_state(db: &Database) -> Result<StateDocument> {
             .and_then(|value| value.as_object())
         {
             for (table, value) in created {
+                // The fork's trial table moved to the base. Its rows are still
+                // this fork's trials.
+                if table == TRIAL_TABLE {
+                    trials.extend(read_trials(db, &fork.name).await?);
+                }
                 promotions.push(PromotionState {
                     fork: fork.name.clone(),
                     table: table.clone(),
@@ -111,6 +119,11 @@ pub async fn export_state(db: &Database) -> Result<StateDocument> {
         {
             continue;
         }
+        // A promoted trial table now lives on the base, and the fork no longer
+        // has it. Its rows are still that fork's trials.
+        if entry.name == TRIAL_TABLE {
+            trials.extend(read_trials(db, fork_name).await?);
+        }
         promotions.push(PromotionState {
             fork: fork_name.to_string(),
             table: entry.name,
@@ -141,6 +154,10 @@ pub async fn export_state(db: &Database) -> Result<StateDocument> {
             .cmp(&right.fork)
             .then(left.run_id.cmp(&right.run_id))
             .then(left.ts_ns.cmp(&right.ts_ns))
+    });
+    // A promoted shadow can leave the same rows on the fork and on the base.
+    trials.dedup_by(|right, left| {
+        left.fork == right.fork && left.run_id == right.run_id && left.ts_ns == right.ts_ns
     });
     promotions.sort_by(|left, right| {
         left.fork

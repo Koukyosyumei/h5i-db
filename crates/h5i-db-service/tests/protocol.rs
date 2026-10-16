@@ -14,7 +14,7 @@ use base64::Engine;
 use h5i_db_core::{Database, TableOptions};
 use h5i_db_service::{
     BacktestRequest, CreateFork, ForkFrom, HoldoutCall, HoldoutOpened, IngestRequest, PromoteAll,
-    PromoteTable, QueryRequest, ReadPoint, SealCall, Service, ServiceError, WriteMode,
+    PromoteOne, PromoteTable, QueryRequest, ReadPoint, SealCall, Service, ServiceError, WriteMode,
 };
 
 fn schema() -> arrow::datatypes::SchemaRef {
@@ -693,6 +693,27 @@ async fn a_backtest_records_one_trial_and_a_retry_does_not_run_again() {
         "a retry must not run the strategy"
     );
     assert_eq!(handle.list_trials().await.unwrap().len(), 1);
+
+    // Promoting the trial table moves it to the base. The export still lists
+    // the trial under the fork that ran it.
+    service
+        .promote(&PromoteOne {
+            idempotency_key: "k-bt-promote".into(),
+            fork: "runner".into(),
+            table: PromoteTable {
+                table: "bt_trial".into(),
+                expected_base: None,
+            },
+        })
+        .await
+        .unwrap();
+    let state = service.export_state().await.unwrap();
+    let trials: Vec<_> = state
+        .trials
+        .iter()
+        .map(|trial| (trial.fork.as_str(), trial.run_id.as_str()))
+        .collect();
+    assert_eq!(trials, vec![("runner", "run-1")]);
 }
 
 #[tokio::test]
