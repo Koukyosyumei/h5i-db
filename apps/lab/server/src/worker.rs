@@ -40,6 +40,19 @@ fn fork_name(agent: u64) -> String {
     format!("a-{agent}")
 }
 
+/// The fork is created on the first trial, not at enrollment.
+fn agent_has_work(snap: &k::Snapshot, agent: u64) -> bool {
+    snap.pendings.iter().any(|row| row.agent == agent)
+        || snap.trials.iter().any(|row| row.agent == agent)
+        || snap.families.iter().any(|row| {
+            row.agent == agent
+                && (row.trials != 0
+                    || row.frozen_code != 0
+                    || row.holdout != k::HOLDOUT_NONE
+                    || row.promoted != 0)
+        })
+}
+
 fn alert(alerts: &Mutex<Vec<Alert>>, kind: &str, detail: impl Into<String>) {
     alerts.lock().expect("alerts").push(Alert {
         kind: kind.into(),
@@ -59,6 +72,7 @@ pub fn kernel_claims(snap: &k::Snapshot, actual: &StateDocument, seal_id: &str) 
     claimed.forks = snap
         .agents
         .iter()
+        .filter(|agent| agent_has_work(snap, agent.id))
         .map(|agent| {
             let name = format!("a-{}", agent.fork_id);
             actual
@@ -134,10 +148,22 @@ pub fn kernel_claims(snap: &k::Snapshot, actual: &StateDocument, seal_id: &str) 
         .filter(|row| promoted.iter().any(|fork| fork == &row.fork))
         .cloned()
         .collect();
-    for fork in &promoted {
-        if !claimed.promotions.iter().any(|row| &row.fork == fork) {
+    for fork_name in &promoted {
+        if claimed.promotions.iter().any(|row| &row.fork == fork_name) {
+            continue;
+        }
+        // A fork that exists and owns nothing published nothing, which is the
+        // whole of its delta. A missing fork, or one that still owns rows,
+        // has not landed.
+        let still_owns = actual
+            .forks
+            .iter()
+            .find(|fork| &fork.name == fork_name)
+            .map(|fork| !fork.owned.is_empty())
+            .unwrap_or(true);
+        if still_owns {
             claimed.promotions.push(PromotionState {
-                fork: fork.clone(),
+                fork: fork_name.clone(),
                 table: "missing".into(),
                 kind: "promote".into(),
                 base_sequence: None,
@@ -147,6 +173,26 @@ pub fn kernel_claims(snap: &k::Snapshot, actual: &StateDocument, seal_id: &str) 
         }
     }
     claimed
+}
+
+/// Tables a promote effect should publish: the ones the fork owns.
+///
+/// A pin is the base the fork reads. Promoting it fails, because the fork
+/// does not own that table until it writes. `expected_base` is the pin
+/// sequence when the owned table was copied from one, and `None` when the
+/// fork created the table.
+pub fn tables_to_promote(fork: &ForkState) -> Vec<PromoteTable> {
+    fork.owned
+        .iter()
+        .map(|owned| PromoteTable {
+            table: owned.table.clone(),
+            expected_base: fork
+                .pins
+                .iter()
+                .find(|pin| pin.table == owned.table)
+                .map(|pin| pin.sequence),
+        })
+        .collect()
 }
 
 enum HoldoutCount {
@@ -235,7 +281,7 @@ impl DbWorker {
         let agent = pending.agent;
         let db = Arc::clone(&self.db);
         let effect_key = key.to_string();
-        let summary = on_db(move || async move {
+        let ran = on_db(move || async move {
             match db
                 .create_fork(&CreateFork {
                     idempotency_key: format!("fork-{fork}"),
@@ -271,8 +317,18 @@ impl DbWorker {
                 .map_err(|e| e.to_string())?;
             Ok(receipt.result_summary)
         })
-        .await?;
-        let score = score_of(&summary);
+        .await;
+        let score = match ran {
+            Ok(summary) => score_of(&summary),
+            // The engine answered. Retrying will not grow an instruments
+            // catalog, and leaving the pending open would spend budget
+            // without counting the attempt. Score zero still counts.
+            Err(error) if error.starts_with("backtest:") => {
+                alert(&self.alerts, "backtest", error);
+                0
+            }
+            Err(error) => return Err(error),
+        };
         let cmd = k::Command::RecordTrial {
             pending: pending_id,
             data_version: 1,
@@ -400,20 +456,16 @@ impl DbWorker {
             let fork = fork.clone();
             move || async move {
                 let state = db.export_state().await.map_err(|e| e.to_string())?;
-                let pins = state
+                let row = state
                     .forks
                     .iter()
                     .find(|item| item.name == fork)
-                    .map(|item| item.pins.clone())
                     .ok_or_else(|| format!("fork {fork} is not in h5i-db"))?;
-                for pin in &pins {
+                for table in tables_to_promote(row) {
                     db.promote(&PromoteOne {
-                        idempotency_key: format!("{effect_key}-{}", pin.table),
+                        idempotency_key: format!("{effect_key}-{}", table.table),
                         fork: fork.clone(),
-                        table: PromoteTable {
-                            table: pin.table.clone(),
-                            expected_base: Some(pin.sequence),
-                        },
+                        table,
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -427,5 +479,175 @@ impl DbWorker {
             alert(&self.alerts, "reconcile", format!("{diff:?}"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use h5i_db_service::{OwnedHead, PinReceipt};
+
+    fn fork(name: &str, owned: Vec<OwnedHead>, pins: Vec<PinReceipt>) -> ForkState {
+        ForkState {
+            name: name.into(),
+            created_at_ns: 0,
+            note: None,
+            as_of_ns: None,
+            parent: None,
+            depth: 0,
+            pins,
+            owned,
+        }
+    }
+
+    fn family(id: u64, agent: u64, promoted: u64) -> k::Family {
+        k::Family {
+            id,
+            agent,
+            task: id,
+            hypothesis: 1,
+            method: 1,
+            trials: 0,
+            best: 0,
+            frozen_code: 1,
+            frozen_params: 1,
+            frozen_data: 1,
+            holdout: k::HOLDOUT_PASS,
+            promoted,
+        }
+    }
+
+    #[test]
+    fn a_pin_is_not_promoted_until_the_fork_owns_it() {
+        let pinned = fork(
+            "a-1",
+            vec![],
+            vec![PinReceipt {
+                table: "trades".into(),
+                sequence: 4,
+                manifest_checksum: "abc".into(),
+            }],
+        );
+        assert!(tables_to_promote(&pinned).is_empty());
+
+        let wrote = fork(
+            "a-1",
+            vec![OwnedHead {
+                table: "trades".into(),
+                sequence: 1,
+                rows: 2,
+            }],
+            vec![PinReceipt {
+                table: "trades".into(),
+                sequence: 4,
+                manifest_checksum: "abc".into(),
+            }],
+        );
+        let tables = tables_to_promote(&wrote);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].table, "trades");
+        assert_eq!(tables[0].expected_base, Some(4));
+    }
+
+    #[test]
+    fn an_empty_fork_needs_no_promotion_row() {
+        let snap = k::Snapshot {
+            agents: vec![k::Agent {
+                id: 1,
+                budget: 1,
+                used: 0,
+                token_budget: 1,
+                tokens_used: 0,
+                fork_id: 1,
+                sandbox: 0,
+            }],
+            families: vec![family(1, 1, 1)],
+            ..k::Snapshot::default()
+        };
+        let actual = StateDocument {
+            format: h5i_db_service::STATE_FORMAT,
+            forks: vec![fork("a-1", vec![], vec![])],
+            versions: vec![],
+            trials: vec![],
+            evaluations: vec![HoldoutReceipt {
+                seal_id: "holdout".into(),
+                state: "completed".into(),
+                code_identity: "1".into(),
+                parameters: "1".into(),
+                data_version: "1".into(),
+                summary: None,
+            }],
+            promotions: vec![],
+        };
+        let claimed = kernel_claims(&snap, &actual, "holdout");
+        assert!(
+            Service::reconcile(&actual, &claimed).agrees(),
+            "a fork with no owned rows has nothing to publish"
+        );
+
+        let still = StateDocument {
+            forks: vec![fork(
+                "a-1",
+                vec![OwnedHead {
+                    table: "trades".into(),
+                    sequence: 1,
+                    rows: 1,
+                }],
+                vec![],
+            )],
+            ..actual
+        };
+        let claimed = kernel_claims(&snap, &still, "holdout");
+        assert!(!Service::reconcile(&still, &claimed).agrees());
+    }
+
+    #[test]
+    fn an_idle_agent_is_not_a_missing_fork() {
+        let snap = k::Snapshot {
+            agents: vec![
+                k::Agent {
+                    id: 1,
+                    budget: 1,
+                    used: 1,
+                    token_budget: 1,
+                    tokens_used: 0,
+                    fork_id: 1,
+                    sandbox: 0,
+                },
+                k::Agent {
+                    id: 2,
+                    budget: 1,
+                    used: 0,
+                    token_budget: 1,
+                    tokens_used: 0,
+                    fork_id: 2,
+                    sandbox: 1,
+                },
+            ],
+            trials: vec![k::Trial {
+                id: 2,
+                family: 1,
+                agent: 1,
+                code: 3,
+                params: 4,
+                data_version: 1,
+                decision_time: 5,
+                score: 0,
+                tokens: 0,
+            }],
+            ..k::Snapshot::default()
+        };
+        let actual = StateDocument {
+            format: h5i_db_service::STATE_FORMAT,
+            forks: vec![fork("a-1", vec![], vec![])],
+            versions: vec![],
+            trials: vec![],
+            evaluations: vec![],
+            promotions: vec![],
+        };
+        let claimed = kernel_claims(&snap, &actual, "holdout");
+        assert_eq!(claimed.forks.len(), 1);
+        assert_eq!(claimed.forks[0].name, "a-1");
+        assert!(claimed.trials.iter().any(|row| row.run_id == "p-2"));
     }
 }

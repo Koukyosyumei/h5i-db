@@ -377,28 +377,16 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
 
     let actual = StateDocument {
         format: h5i_db_service::STATE_FORMAT,
-        forks: vec![
-            ForkState {
-                name: "a-1".into(),
-                created_at_ns: 0,
-                note: None,
-                as_of_ns: None,
-                parent: None,
-                depth: 0,
-                pins: Vec::new(),
-                owned: Vec::new(),
-            },
-            ForkState {
-                name: "a-2".into(),
-                created_at_ns: 0,
-                note: None,
-                as_of_ns: None,
-                parent: None,
-                depth: 0,
-                pins: Vec::new(),
-                owned: Vec::new(),
-            },
-        ],
+        forks: vec![ForkState {
+            name: "a-1".into(),
+            created_at_ns: 0,
+            note: None,
+            as_of_ns: None,
+            parent: None,
+            depth: 0,
+            pins: Vec::new(),
+            owned: Vec::new(),
+        }],
         versions: vec![],
         trials: vec![TrialState {
             fork: "a-1".into(),

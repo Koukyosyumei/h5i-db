@@ -23,6 +23,15 @@ data directory from `fs.read`, so the file open fails as well. The runner
 never falls back to a plain shell. An explicit process box fails closed when
 `h5i box probe` reports that the process tier cannot execute on the host.
 
+## Delivery
+
+The fork is created on the first trial, not at enrollment. A trial effect runs
+a backtest on that fork. When the engine rejects
+the run, the worker records a score of zero, so the attempt still counts and
+the outbox does not retry a rejection. A promote publishes only tables the
+fork owns. Pins are the base it reads. A fork that never wrote has nothing
+to publish; the ledger still records the human's promotion.
+
 ## Prove
 
 ```
