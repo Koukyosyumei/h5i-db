@@ -1,20 +1,14 @@
-<p align="center">
-  <img src="./docs/_static/logo.png" alt="h5i-db logo" height="126">
-</p>
+# h5i-db
 
-<p align="center">
-  <a href="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://pepy.tech/projects/h5i-db"><img alt="downloads" src="https://static.pepy.tech/personalized-badge/h5i-db?period=total&units=INTERNATIONAL_SYSTEM&left_color=GRAY&right_color=GREEN&left_text=downloads"></a>
-  <a href="https://github.com/h5i-dev/h5i-db/blob/main/LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/h5i-dev/h5i-db?color=blue"></a>
-</p>
+<a href="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/h5i-dev/h5i-db/actions/workflows/ci.yml/badge.svg"></a>
+<a href="https://pepy.tech/projects/h5i-db"><img alt="downloads" src="https://static.pepy.tech/personalized-badge/h5i-db?period=total&units=INTERNATIONAL_SYSTEM&left_color=GRAY&right_color=GREEN&left_text=downloads"></a>
+<a href="https://github.com/h5i-dev/h5i-db/blob/main/LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/h5i-dev/h5i-db?color=blue"></a>
 
-<p align="center"><a href="README.md">English</a> · <b>Español</b> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
+[English](README.md) · **Español** · [Français](README.fr.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-<h1 align="center">Backtesting sobre datos de mercado versionados</h1>
+**h5i-db** es una base de datos de series temporales embebida y un backtester orientado a eventos para la investigación cuantitativa.
 
-**h5i-db** es una base de datos de series temporales embebida y un backtester orientado a eventos para la investigación cuantitativa, escritos en Rust. Se usa desde Python, y lo que ejecutaron tus agentes se revisa en una interfaz web local.
-
-- **Backtesting desde Python:** `pip install h5i-db`, sin servidor. Reproduce 3,05 M de eventos/s, y cada ejecución queda fijada a una versión de los datos, así que se puede volver a ejecutar y verificar.
+- **Backtesting desde Python:** `pip install h5i-db`, sin servidor. Reproduce 3,05 M de eventos/s, y cada ejecución queda fijada a una versión de los datos.
 - **Sin sesgo de anticipación, por construcción:** fija un instante de decisión y ninguna fila posterior podrá llegar a tu marco de datos.
 - **Experimentos baratos:** cada ejecución corre en su propio fork de la base de datos. Un barrido de parámetros es un fork por prueba, clasificado fuera de muestra, sin copiar datos.
 - **Revisión en el navegador:** `h5i-db ui` reúne pruebas, forks, versiones y escrituras pendientes en una sola página, ordenadas según lo que necesita a una persona primero.
@@ -70,34 +64,20 @@ board = backtest.study(
 - **Estadística:** métricas de factores y de rendimiento con paridad `alphalens` y `empyrical`, además de Sharpe deflactado y probabilidad de sobreajuste del backtest.
 - **Entrada y salida de datos:** `db.append`, `db.sql(...)`, SQL de series temporales (ASOF join, `time_bucket`, `vwap`, ventanas móviles), y cualquier versión pasada con `db.read(..., version=n)`.
 
-`python examples/backtest_report_demo.py` genera un informe HTML autocontenido:
-
-<p align="center">
-  <img src="./docs/_static/report-screenshot-1.png" width="49%" />
-  <img src="./docs/_static/report-screenshot-2.png" width="49%" />
-</p>
-
 ---
 
 ## 2. Laboratorio de investigación
 
-`apps/lab` es un registro para una persona que ejecuta muchos agentes sobre una misma base de datos. Un agente envía una estrategia como un programa corto de reglas con parámetros JSON. Un worker la somete a backtest en el fork del agente a través de la API de servicio y registra la prueba tanto si la ejecución salió bien como si no. El protocolo es un kernel de h5i-app con pruebas en Lean: cada prueba se cuenta, un agente no puede leer más allá de su instante de decisión ni dentro del holdout sellado, el holdout se evalúa una sola vez y solo una persona hace promote.
-
-```bash
-apps/lab/demo.sh         # PostgreSQL in Docker, synthetic market, three scripted agents, 127.0.0.1:8202
-apps/lab/demo.sh down
-```
-
-<p align="center">
-  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
-</p>
+`apps/lab/demo.sh` arranca el laboratorio en 127.0.0.1:8202 con PostgreSQL en Docker, un mercado sintético y tres agentes guionizados (`apps/lab/demo.sh down` lo detiene). Para usarlo con tus propios datos, consulta [apps/lab/README.md](apps/lab/README.md).
 
 - **Cola de revisión:** estrategias congeladas con su código, parámetros, curva de capital, costes y resultado del holdout, para hacer promote, rechazarlas o comentarlas.
 - **Clasificación:** familias ordenadas por Sharpe deflactado, que baja cuantas más variantes prueba una familia. Los rendimientos en bruto se quedan en las pruebas.
 - **Pruebas:** cada ejecución contada con rendimiento, drawdown máximo, Sharpe, ejecuciones, costes y una minigráfica del capital, todo a partir de las ejecuciones del motor.
 - **Alertas:** lecturas más allá de un instante de decisión, backtests rechazados, un holdout ya usado.
 
-Con tus propios datos, el laboratorio necesita PostgreSQL y una base de datos h5i-db con un catálogo de instrumentos, instantáneas del libro de órdenes y un sello sobre el periodo de holdout. [apps/lab/README.md](apps/lab/README.md) describe la configuración, el lenguaje de estrategias y lo que cubren las pruebas.
+<p align="center">
+  <img src="./docs/_static/lab-ui.png" alt="h5i-db research lab: review queue, leaderboard and trials" width="99%" />
+</p>
 
 ---
 

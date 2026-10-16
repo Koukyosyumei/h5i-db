@@ -68,6 +68,8 @@ board = backtest.study(
 
 ## 2. Research lab
 
+`apps/lab/demo.sh` starts the lab on 127.0.0.1:8202 with PostgreSQL in Docker, a synthetic market and three scripted agents (`apps/lab/demo.sh down` stops it). To run it on your own data, see [apps/lab/README.md](apps/lab/README.md).
+
 - **Review queue:** frozen strategies with their code, parameters, equity curve, costs and holdout result, to promote, reject or comment on.
 - **Leaderboard:** families ranked by deflated Sharpe, which drops as a family tries more variants. Raw returns stay on the trials.
 - **Trials:** every counted run with return, max drawdown, Sharpe, fills, costs and an equity sparkline, all from the engine's fills.
