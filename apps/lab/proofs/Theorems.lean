@@ -50,9 +50,11 @@ attribute [simp] u64_val_eq u64_bne
 /-- An agent cannot record a trial. Only the worker can, so a failed trial
 cannot be dropped by never reporting it. -/
 theorem record_requires_worker
-    (actor : Principal) (s : Snapshot) (pending data_version score tokens : U64)
+    (actor : Principal) (s : Snapshot)
+    (pending data_version score corrected sharpe skew kurt samples tokens : U64)
     (h : actor.role ≠ ROLE_WORKER) :
-    record_trial actor s pending data_version score tokens = ok (.Err .Forbidden) := by
+    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens =
+      ok (.Err .Forbidden) := by
   unfold record_trial
   rw [u64_bne]
   simp [h]
@@ -87,11 +89,14 @@ theorem review_requires_human
   · unfold comment; rw [u64_bne]; simp [h]
   · unfold promote; rw [u64_bne]; simp [h]
 
-/-- With more than one trial and a positive best, the reported rank is strictly
-below the raw best. -/
-theorem reported_below_raw (best n : U64) (hn : 1 < n.val) (hb : 0 < best.val) :
-    reported_score best n ⦃ r => r.val < best.val ⦄ := by
-  unfold reported_score
+/-- A report returns the corrected score stored on the family and the trial
+count. The raw score is not part of that reply. -/
+theorem reported_is_the_stored_correction (actor : Principal) (s : Snapshot) (family : U64) :
+    report actor s family ⦃ r => ∀ ws trials corrected,
+      r = .Ok (ws, .Metric trials corrected) →
+        ∃ f, s.families.val.find? (fun g => g.id.val = family.val) = some f ∧
+          trials = f.trials ∧ corrected = f.corrected ⦄ := by
+  unfold report
   step*
 
 /-- A successful evaluation read a family that was still queued, so a second
@@ -103,15 +108,18 @@ theorem holdout_is_once (actor : Principal) (s : Snapshot) (family passed : U64)
   unfold evaluate_holdout
   step*
 
-/-- A recorded trial increases that family's trial count by one. -/
+/-- A recorded trial increases that family's trial count by one and stores the
+corrected score it was given. -/
 theorem record_counts_the_trial
-    (actor : Principal) (s : Snapshot) (pending data_version score tokens : U64) :
-    record_trial actor s pending data_version score tokens ⦃ r =>
+    (actor : Principal) (s : Snapshot)
+    (pending data_version score corrected sharpe skew kurt samples tokens : U64) :
+    record_trial actor s pending data_version score corrected sharpe skew kurt samples tokens ⦃ r =>
       ∀ ws rep, r = .Ok (ws, rep) →
         ∃ (f wrote : Family),
           f ∈ s.families.val ∧
           wrote.id = f.id ∧
           wrote.trials.val = f.trials.val + 1 ∧
+          wrote.corrected = corrected ∧
           Write.PutFamily wrote ∈ ws.val ⦄ := by
   unfold record_trial
   h5i_steps
@@ -120,24 +128,11 @@ theorem record_counts_the_trial
     intro ws rep hr
     obtain ⟨rfl, rfl⟩ := ok_inj hr
     let hf : f ∈ s.families.val := List.mem_of_find?_eq_some (o1_post ▸ ‹o1 = some f›)
-    let higher : Family := {
-      id := f.id, agent := f.agent, task := f.task, hypothesis := f.hypothesis,
-      method := f.method, trials := i2, best := score, frozen_code := f.frozen_code,
-      frozen_params := f.frozen_params, frozen_data := f.frozen_data, holdout := f.holdout,
-      promoted := f.promoted, rejected := f.rejected }
-    let kept : Family := {
-      id := f.id, agent := f.agent, task := f.task, hypothesis := f.hypothesis,
-      method := f.method, trials := i2, best := f.best, frozen_code := f.frozen_code,
-      frozen_params := f.frozen_params, frozen_data := f.frozen_data, holdout := f.holdout,
-      promoted := f.promoted, rejected := f.rejected }
-    first
-      | (refine ⟨f, higher, hf, ?_, ?_, ?_⟩
-         · simp [higher]
-         · simpa [higher] using i2_post
-         · simp [v_post, higher])
-      | (refine ⟨f, kept, hf, ?_, ?_, ?_⟩
-         · simp [kept]
-         · simpa [kept] using i2_post
-         · simp [v_post, kept]))
+    let wrote : Family := { f with trials := i2, corrected := corrected }
+    refine ⟨f, wrote, hf, ?_, ?_, ?_, ?_⟩
+    · simp [wrote]
+    · simpa [wrote] using i2_post
+    · simp [wrote]
+    · simp [v_post, wrote])
 
 end lab_kernel

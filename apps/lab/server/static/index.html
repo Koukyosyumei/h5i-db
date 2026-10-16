@@ -85,12 +85,12 @@ button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
   </section>
   <section>
     <h2>leaderboard</h2>
-    <p class="trust">Ranked on the corrected score, one point off the raw best for every extra trial.</p>
-    <table id="board"><thead><tr><th>family</th><th>trials</th><th>raw best</th><th>reported</th></tr></thead><tbody></tbody></table>
+    <p class="trust">Ranked on the corrected score the worker stored and the trial count. That score is a deflated Sharpe ratio, shown in millionths of a probability.</p>
+    <table id="board"><thead><tr><th>family</th><th>trials</th><th>corrected</th></tr></thead><tbody></tbody></table>
   </section>
   <section class="wide">
     <h2>review</h2>
-    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>method</th><th>code</th><th>params</th><th>data</th><th>holdout</th><th>promoted</th><th>rejected</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="review"><thead><tr><th>family</th><th>trials</th><th>corrected</th><th>hypothesis</th><th>method</th><th>code</th><th>params</th><th>data</th><th>holdout</th><th>promoted</th><th>rejected</th><th></th></tr></thead><tbody></tbody></table>
     <p><input id="comment" placeholder="comment back to the agent"><button id="send">comment</button></p>
     <table id="notes"><thead><tr><th>family</th><th>decision</th><th>text</th></tr></thead><tbody></tbody></table>
   </section>
@@ -122,6 +122,7 @@ function holdoutName(n) {
   return { 0: "none", 1: "pass", 2: "fail", 3: "queued" }[n] || String(n);
 }
 function rows(table, html) { table.querySelector("tbody").innerHTML = html; }
+function millionths(n) { return (Number(n) / 1000000).toFixed(4); }
 async function refresh() {
   if (!tokenEl.value) return;
   const fleet = await rpc({ cmd: "fleet" });
@@ -137,15 +138,15 @@ async function refresh() {
       : "advisory: no sandbox. the API refuses a sealed read, and an agent with a shell can still open the files.";
   rows(document.querySelector("#agents"), agents.map(a =>
     `<tr><td>${a.id}</td><td>${a.trust}</td><td>${a.used}</td><td>${a.budget}</td><td>${a.tokens_used}/${a.token_budget}</td></tr>`).join(""));
-  const ranked = families.slice().sort((a, b) => b.reported - a.reported);
+  const ranked = families.slice().sort((a, b) => b.corrected - a.corrected);
   rows(document.querySelector("#board"), ranked.map(f =>
-    `<tr><td>${f.id}</td><td>${f.trials}</td><td>${f.best}</td><td class="${f.trials > 1 ? "ok" : ""}">${f.reported}</td></tr>`).join(""));
+    `<tr><td>${f.id}</td><td>${f.trials}</td><td class="${f.trials > 1 ? "ok" : ""}" title="${f.corrected}">${millionths(f.corrected)}</td></tr>`).join(""));
   const notes = await fetch("/api/comments", { headers: headers() }).then(r => r.json()).catch(() => ({ comments: [] }));
   rows(document.querySelector("#review"), families.map(f => {
     const actions = [];
     if (f.holdout === 1 && !f.promoted && !f.rejected) actions.push(`<button data-promote="${f.id}">promote</button>`);
     if (!f.promoted && !f.rejected) actions.push(`<button data-reject="${f.id}">reject</button>`);
-    return `<tr><td>${f.id}</td><td>${f.hypothesis}</td><td>${f.method}</td><td>${f.frozen_code}</td><td>${f.frozen_params}</td><td>${f.frozen_data}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${f.rejected ? "yes" : "no"}</td><td>${actions.join(" ")}</td></tr>`;
+    return `<tr><td>${f.id}</td><td>${f.trials}</td><td title="${f.corrected}">${millionths(f.corrected)}</td><td>${f.hypothesis}</td><td>${f.method}</td><td>${f.frozen_code}</td><td>${f.frozen_params}</td><td>${f.frozen_data}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${f.rejected ? "yes" : "no"}</td><td>${actions.join(" ")}</td></tr>`;
   }).join(""));
   rows(document.querySelector("#notes"), (notes.comments || []).map(c =>
     `<tr><td>${c.family}</td><td>${c.decision}</td><td>${c.text}</td></tr>`).join(""));

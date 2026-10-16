@@ -1,6 +1,7 @@
 //! Shell around [`lab_kernel`]. It moves bytes between the kernel, PostgreSQL,
 //! and the h5i-db worker. It does not decide who may do what.
 
+mod deflated;
 mod runner;
 mod worker;
 
@@ -123,6 +124,11 @@ enum CommandJson {
         pending: u64,
         data_version: u64,
         score: u64,
+        corrected: u64,
+        sharpe: u64,
+        skew: u64,
+        kurt: u64,
+        samples: u64,
         tokens: u64,
     },
     Freeze {
@@ -203,11 +209,21 @@ impl From<CommandJson> for k::Command {
                 pending,
                 data_version,
                 score,
+                corrected,
+                sharpe,
+                skew,
+                kurt,
+                samples,
                 tokens,
             } => k::Command::RecordTrial {
                 pending,
                 data_version,
                 score,
+                corrected,
+                sharpe,
+                skew,
+                kurt,
+                samples,
                 tokens,
             },
             CommandJson::EvaluateHoldout { family, passed } => {
@@ -260,8 +276,7 @@ fn family_json(f: &k::Family) -> Out {
         ("hypothesis", f.hypothesis.into()),
         ("method", f.method.into()),
         ("trials", f.trials.into()),
-        ("best", f.best.into()),
-        ("reported", k::reported_score(f.best, f.trials).into()),
+        ("corrected", f.corrected.into()),
         ("frozen_code", f.frozen_code.into()),
         ("frozen_params", f.frozen_params.into()),
         ("frozen_data", f.frozen_data.into()),
@@ -281,6 +296,10 @@ fn trial_json(t: &k::Trial) -> Out {
         ("data_version", t.data_version.into()),
         ("decision_time", t.decision_time.into()),
         ("score", t.score.into()),
+        ("sharpe", t.sharpe.into()),
+        ("skew", t.skew.into()),
+        ("kurt", t.kurt.into()),
+        ("samples", t.samples.into()),
         ("tokens", t.tokens.into()),
     ])
 }
@@ -296,14 +315,9 @@ impl h5i_app_http::Api<Lab> for LabStore {
         match r {
             k::Reply::Ack => Out::obj([("ok", Out::str("true"))]),
             k::Reply::Created(id) => Out::obj([("id", (*id).into())]),
-            k::Reply::Metric {
-                trials,
-                best,
-                reported,
-            } => Out::obj([
+            k::Reply::Metric { trials, corrected } => Out::obj([
                 ("trials", (*trials).into()),
-                ("best", (*best).into()),
-                ("reported", (*reported).into()),
+                ("corrected", (*corrected).into()),
             ]),
             k::Reply::Fleet {
                 agents,
@@ -339,8 +353,7 @@ enum StoredReply {
     Created(u64),
     Metric {
         trials: u64,
-        best: u64,
-        reported: u64,
+        corrected: u64,
     },
     // Kernel rows stay free of serde. The tuple order is the struct field order.
     Fleet {
@@ -358,7 +371,7 @@ struct FamilyRow {
     hypothesis: u64,
     method: u64,
     trials: u64,
-    best: u64,
+    corrected: u64,
     frozen_code: u64,
     frozen_params: u64,
     frozen_data: u64,
@@ -377,6 +390,10 @@ struct TrialRow {
     data_version: u64,
     decision_time: u64,
     score: u64,
+    sharpe: u64,
+    skew: u64,
+    kurt: u64,
+    samples: u64,
     tokens: u64,
 }
 
@@ -393,14 +410,9 @@ impl ReplyCodec<Lab> for LabStore {
         let stored = match r {
             k::Reply::Ack => StoredReply::Ack,
             k::Reply::Created(id) => StoredReply::Created(*id),
-            k::Reply::Metric {
-                trials,
-                best,
-                reported,
-            } => StoredReply::Metric {
+            k::Reply::Metric { trials, corrected } => StoredReply::Metric {
                 trials: *trials,
-                best: *best,
-                reported: *reported,
+                corrected: *corrected,
             },
             k::Reply::Fleet {
                 agents,
@@ -430,7 +442,7 @@ impl ReplyCodec<Lab> for LabStore {
                         hypothesis: f.hypothesis,
                         method: f.method,
                         trials: f.trials,
-                        best: f.best,
+                        corrected: f.corrected,
                         frozen_code: f.frozen_code,
                         frozen_params: f.frozen_params,
                         frozen_data: f.frozen_data,
@@ -450,6 +462,10 @@ impl ReplyCodec<Lab> for LabStore {
                         data_version: t.data_version,
                         decision_time: t.decision_time,
                         score: t.score,
+                        sharpe: t.sharpe,
+                        skew: t.skew,
+                        kurt: t.kurt,
+                        samples: t.samples,
                         tokens: t.tokens,
                     })
                     .collect(),
@@ -463,15 +479,7 @@ impl ReplyCodec<Lab> for LabStore {
             match serde_json::from_slice(bytes).map_err(|e| e.to_string())? {
                 StoredReply::Ack => k::Reply::Ack,
                 StoredReply::Created(id) => k::Reply::Created(id),
-                StoredReply::Metric {
-                    trials,
-                    best,
-                    reported,
-                } => k::Reply::Metric {
-                    trials,
-                    best,
-                    reported,
-                },
+                StoredReply::Metric { trials, corrected } => k::Reply::Metric { trials, corrected },
                 StoredReply::Fleet {
                     agents,
                     families,
@@ -502,7 +510,7 @@ impl ReplyCodec<Lab> for LabStore {
                             hypothesis: f.hypothesis,
                             method: f.method,
                             trials: f.trials,
-                            best: f.best,
+                            corrected: f.corrected,
                             frozen_code: f.frozen_code,
                             frozen_params: f.frozen_params,
                             frozen_data: f.frozen_data,
@@ -522,6 +530,10 @@ impl ReplyCodec<Lab> for LabStore {
                             data_version: t.data_version,
                             decision_time: t.decision_time,
                             score: t.score,
+                            sharpe: t.sharpe,
+                            skew: t.skew,
+                            kurt: t.kurt,
+                            samples: t.samples,
                             tokens: t.tokens,
                         })
                         .collect(),
@@ -639,6 +651,10 @@ mod tests {
             data_version: 1,
             decision_time: 1,
             score: 1,
+            sharpe: 0,
+            skew: 0,
+            kurt: 0,
+            samples: 0,
             tokens: 0,
         };
         assert!(burst_details(&[trial(1), trial(2)]).is_empty());
@@ -668,12 +684,64 @@ mod tests {
                 data_version: 1,
                 decision_time: 50,
                 score: 1,
+                sharpe: 0,
+                skew: 0,
+                kurt: 0,
+                samples: 0,
                 tokens: 0,
             }],
             ..k::Snapshot::default()
         };
         assert_eq!(agent_ceiling_ns(&snap, 4), Some(50));
         assert_eq!(agent_ceiling_ns(&snap, 9), None);
+    }
+
+    #[test]
+    fn the_leaderboard_and_the_review_page_expose_the_stored_correction() {
+        let family = k::Family {
+            id: 1,
+            agent: 1,
+            task: 1,
+            hypothesis: 1,
+            method: 1,
+            trials: 2,
+            corrected: 250_000,
+            frozen_code: 0,
+            frozen_params: 0,
+            frozen_data: 0,
+            holdout: 0,
+            promoted: 0,
+            rejected: 0,
+        };
+        let text = String::from_utf8(
+            LabStore::encode_reply(&k::Reply::Fleet {
+                agents: vec![],
+                families: vec![family],
+                trials: vec![],
+            })
+            .to_bytes(),
+        )
+        .unwrap();
+        assert!(text.contains("\"corrected\":250000"), "{text}");
+        assert!(text.contains("\"trials\":2"), "{text}");
+        assert!(!text.contains("\"best\""), "{text}");
+        assert!(!text.contains("\"reported\""), "{text}");
+        let metric = String::from_utf8(
+            LabStore::encode_reply(&k::Reply::Metric {
+                trials: 2,
+                corrected: 250_000,
+            })
+            .to_bytes(),
+        )
+        .unwrap();
+        assert!(metric.contains("\"trials\":2"), "{metric}");
+        assert!(metric.contains("\"corrected\":250000"), "{metric}");
+        assert!(!metric.contains("score"), "{metric}");
+        assert!(INDEX_HTML.contains("f.corrected"));
+        assert!(INDEX_HTML.contains("t.score"));
+        assert!(!INDEX_HTML.contains("f.best"));
+        assert!(!INDEX_HTML.contains("f.reported"));
+        assert!(!INDEX_HTML.contains("raw best"));
     }
 }
 

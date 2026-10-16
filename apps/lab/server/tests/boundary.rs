@@ -353,6 +353,11 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
                 pending: pending_id,
                 data_version: 1,
                 score: 1,
+                corrected: 0,
+                sharpe: 0,
+                skew: 0,
+                kurt: 0,
+                samples: 0,
                 tokens: 0
             },
         )
@@ -366,6 +371,11 @@ async fn an_agent_cannot_drop_a_trial_and_the_ledger_diff_shows_it() {
             pending: pending_id,
             data_version: 1,
             score: 5,
+            corrected: 0,
+            sharpe: 0,
+            skew: 0,
+            kurt: 0,
+            samples: 0,
             tokens: 0,
         },
     );

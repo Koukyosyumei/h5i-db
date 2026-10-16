@@ -10,9 +10,9 @@
 //! failed trial cannot be dropped by skipping the call that would have
 //! reported it.
 //!
-//! Scores are non-negative integers. [`reported_score`] subtracts one for
-//! every trial after the first, so a family with more than one positive trial
-//! is never ranked on its raw best.
+//! The family's reported score is `corrected`, an integer the worker stored.
+//! The kernel does not compute it. A report returns that integer and the
+//! trial count, not a raw trial score.
 
 /// Human operator. The only role that enrolls agents and promotes.
 pub const ROLE_HUMAN: u64 = 0;
@@ -85,7 +85,8 @@ h5i_app_schema::schema! {
         hypothesis: u64,
         method: u64,
         trials: u64,
-        best: u64,
+        /// Worker-supplied reported score. The kernel does not derive it.
+        corrected: u64,
         frozen_code: u64,
         frozen_params: u64,
         frozen_data: u64,
@@ -132,6 +133,12 @@ h5i_app_schema::schema! {
         data_version: u64,
         decision_time: u64,
         score: u64,
+        /// Return statistics for this trial, in the worker's encoding.
+        /// The kernel stores them and does not interpret them.
+        sharpe: u64,
+        skew: u64,
+        kurt: u64,
+        samples: u64,
         tokens: u64,
     }
 }
@@ -177,6 +184,11 @@ pub enum Command {
         pending: u64,
         data_version: u64,
         score: u64,
+        corrected: u64,
+        sharpe: u64,
+        skew: u64,
+        kurt: u64,
+        samples: u64,
         tokens: u64,
     },
     Freeze {
@@ -220,10 +232,10 @@ pub enum Command {
 pub enum Reply {
     Ack,
     Created(u64),
+    /// Leaderboard and review read these two numbers and no raw score.
     Metric {
         trials: u64,
-        best: u64,
-        reported: u64,
+        corrected: u64,
     },
     Fleet {
         agents: Vec<Agent>,
@@ -264,20 +276,6 @@ fn four(a: Write, b: Write, c: Write, d: Write) -> Vec<Write> {
     ws.push(c);
     ws.push(d);
     ws
-}
-
-/// Rank a family on every trial, not on the raw best.
-///
-/// With more than one trial and a positive best, the result is strictly
-/// smaller than `best`: one point per extra trial, and zero once that
-/// penalty meets the best.
-pub fn reported_score(best: u64, n: u64) -> u64 {
-    if n <= 1 || best == 0 {
-        best
-    } else {
-        let pen = n - 1;
-        if pen >= best { 0 } else { best - pen }
-    }
 }
 
 pub fn find_agent(v: &Vec<Agent>, id: u64) -> Option<Agent> {
@@ -366,7 +364,7 @@ fn pre_register(actor: &Principal, s: &Snapshot, hypothesis: u64, method: u64) -
         hypothesis,
         method,
         trials: 0,
-        best: 0,
+        corrected: 0,
         frozen_code: 0,
         frozen_params: 0,
         frozen_data: 0,
@@ -450,6 +448,11 @@ fn record_trial(
     pending: u64,
     data_version: u64,
     score: u64,
+    corrected: u64,
+    sharpe: u64,
+    skew: u64,
+    kurt: u64,
+    samples: u64,
     tokens: u64,
 ) -> Outcome {
     if actor.role != ROLE_WORKER {
@@ -491,9 +494,12 @@ fn record_trial(
                                     data_version,
                                     decision_time: p.decision_time,
                                     score,
+                                    sharpe,
+                                    skew,
+                                    kurt,
+                                    samples,
                                     tokens,
                                 };
-                                let best = if score > f.best { score } else { f.best };
                                 let family = Family {
                                     id: f.id,
                                     agent: f.agent,
@@ -501,7 +507,7 @@ fn record_trial(
                                     hypothesis: f.hypothesis,
                                     method: f.method,
                                     trials: f.trials + 1,
-                                    best,
+                                    corrected,
                                     frozen_code: f.frozen_code,
                                     frozen_params: f.frozen_params,
                                     frozen_data: f.frozen_data,
@@ -565,7 +571,7 @@ fn freeze(
                     hypothesis: f.hypothesis,
                     method: f.method,
                     trials: f.trials,
-                    best: f.best,
+                    corrected: f.corrected,
                     frozen_code: code,
                     frozen_params: params,
                     frozen_data: data_version,
@@ -598,7 +604,7 @@ fn submit_holdout(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
                     hypothesis: f.hypothesis,
                     method: f.method,
                     trials: f.trials,
-                    best: f.best,
+                    corrected: f.corrected,
                     frozen_code: f.frozen_code,
                     frozen_params: f.frozen_params,
                     frozen_data: f.frozen_data,
@@ -633,7 +639,7 @@ fn evaluate_holdout(actor: &Principal, s: &Snapshot, family: u64, passed: u64) -
                     hypothesis: f.hypothesis,
                     method: f.method,
                     trials: f.trials,
-                    best: f.best,
+                    corrected: f.corrected,
                     frozen_code: f.frozen_code,
                     frozen_params: f.frozen_params,
                     frozen_data: f.frozen_data,
@@ -689,7 +695,7 @@ fn reject(actor: &Principal, s: &Snapshot, family: u64, text: &Vec<u8>) -> Outco
                     hypothesis: f.hypothesis,
                     method: f.method,
                     trials: f.trials,
-                    best: f.best,
+                    corrected: f.corrected,
                     frozen_code: f.frozen_code,
                     frozen_params: f.frozen_params,
                     frozen_data: f.frozen_data,
@@ -787,7 +793,7 @@ fn promote(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
                     hypothesis: f.hypothesis,
                     method: f.method,
                     trials: f.trials,
-                    best: f.best,
+                    corrected: f.corrected,
                     frozen_code: f.frozen_code,
                     frozen_params: f.frozen_params,
                     frozen_data: f.frozen_data,
@@ -813,8 +819,7 @@ fn report(actor: &Principal, s: &Snapshot, family: u64) -> Outcome {
                     Vec::new(),
                     Reply::Metric {
                         trials: f.trials,
-                        best: f.best,
-                        reported: reported_score(f.best, f.trials),
+                        corrected: f.corrected,
                     },
                 ))
             }
@@ -846,9 +851,29 @@ pub fn transition(actor: &Principal, s: &Snapshot, cmd: &Command) -> Outcome {
         Command::RequestTrial { family, code, params, decision_time } => {
             request_trial(actor, s, *family, *code, *params, *decision_time)
         }
-        Command::RecordTrial { pending, data_version, score, tokens } => {
-            record_trial(actor, s, *pending, *data_version, *score, *tokens)
-        }
+        Command::RecordTrial {
+            pending,
+            data_version,
+            score,
+            corrected,
+            sharpe,
+            skew,
+            kurt,
+            samples,
+            tokens,
+        } => record_trial(
+            actor,
+            s,
+            *pending,
+            *data_version,
+            *score,
+            *corrected,
+            *sharpe,
+            *skew,
+            *kurt,
+            *samples,
+            *tokens,
+        ),
         Command::Freeze { family, code, params, data_version } => {
             freeze(actor, s, *family, *code, *params, *data_version)
         }
@@ -923,12 +948,12 @@ mod tests {
         );
         let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
         assert_eq!(
-            run(&s, agent(7), Command::RecordTrial { pending, data_version: 1, score: 9, tokens: 1 }).1,
+            run(&s, agent(7), Command::RecordTrial { pending, data_version: 1, score: 9, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 }).1,
             Err(Error::Forbidden)
         );
-        let (s, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 4, tokens: 1 });
+        let (s, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 4, corrected: 800_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
         assert_eq!(r, Ok(Reply::Ack));
-        let (s2, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 100, tokens: 1 });
+        let (s2, r) = run(&s, worker(), Command::RecordTrial { pending, data_version: 1, score: 100, corrected: 1, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
         assert_eq!(r, Err(Error::Conflict));
         assert_eq!(s2.families[0].trials, s.families[0].trials);
         let (s, r) = run(
@@ -937,16 +962,15 @@ mod tests {
             Command::RequestTrial { family, code: 8, params: 4, decision_time: 6 },
         );
         let Reply::Created(pending2) = r.unwrap() else { panic!("pending2") };
-        let (s, _) = run(&s, worker(), Command::RecordTrial { pending: pending2, data_version: 1, score: 9, tokens: 1 });
+        let (s, _) = run(&s, worker(), Command::RecordTrial { pending: pending2, data_version: 1, score: 9, corrected: 100_000, sharpe: 0, skew: 0, kurt: 0, samples: 0, tokens: 1 });
         assert_eq!(s.families[0].trials, 2);
-        assert_eq!(s.families[0].best, 9);
+        assert_eq!(s.families[0].corrected, 100_000);
+        assert_eq!(s.trials[1].score, 9);
         assert_eq!(s.trials.len(), 2);
         match run(&s, agent(7), Command::Report { family }).1 {
-            Ok(Reply::Metric { trials, best, reported }) => {
+            Ok(Reply::Metric { trials, corrected }) => {
                 assert_eq!(trials, 2);
-                assert_eq!(best, 9);
-                assert!(reported < best);
-                assert_eq!(reported, reported_score(best, trials));
+                assert_eq!(corrected, 100_000);
             }
             other => panic!("{other:?}"),
         }
@@ -1051,10 +1075,24 @@ mod tests {
     }
 
     #[test]
-    fn reported_score_is_below_the_raw_best_after_the_first_trial() {
-        assert_eq!(reported_score(10, 1), 10);
-        assert_eq!(reported_score(10, 2), 9);
-        assert_eq!(reported_score(3, 10), 0);
-        assert!(reported_score(10, 4) < 10);
+    fn the_report_returns_the_stored_correction_not_the_raw_score() {
+        let s = Snapshot::default();
+        let (s, _) = run(&s, human(), Command::Enroll { agent: 4, budget: 2, token_budget: 2, sandbox: 0 });
+        let (s, r) = run(&s, agent(4), Command::PreRegister { hypothesis: 1, method: 1 });
+        let Reply::Created(family) = r.unwrap() else { panic!("family") };
+        let (s, r) = run(&s, agent(4), Command::RequestTrial { family, code: 2, params: 2, decision_time: 3 });
+        let Reply::Created(pending) = r.unwrap() else { panic!("pending") };
+        let (s, _) = run(&s, worker(), Command::RecordTrial {
+            pending, data_version: 1, score: 50, corrected: 250_000, sharpe: 1, skew: 2, kurt: 3, samples: 4, tokens: 0,
+        });
+        assert_eq!(s.trials[0].score, 50);
+        assert_eq!(s.trials[0].samples, 4);
+        match run(&s, human(), Command::Report { family }).1 {
+            Ok(Reply::Metric { trials, corrected }) => {
+                assert_eq!(trials, 1);
+                assert_eq!(corrected, 250_000);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

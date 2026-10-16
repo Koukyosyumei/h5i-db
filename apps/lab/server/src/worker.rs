@@ -3,6 +3,10 @@
 //! The kernel never sees the database. A retried delivery uses the same
 //! idempotency key, so a second pass does not run the strategy again and does
 //! not open the holdout a second time.
+//!
+//! The deflated Sharpe ratio is computed here, from the family's stored trial
+//! statistics and this run's equity curve. The kernel stores the integer it
+//! is given. It does not evaluate the formula.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -12,12 +16,24 @@ use h5i_app_pg::Engine;
 use h5i_db_backtest::engine::Strategy;
 use h5i_db_service::{
     BacktestRequest, CreateFork, ForkFrom, ForkState, HoldoutCall, HoldoutOpened, HoldoutReceipt,
-    PromoteOne, PromoteTable, PromotionState, QueryRequest, ReadPoint, Service, StateDocument,
-    TrialState,
+    PromoteOne, PromoteTable, PromotionState, QueryRequest, QueryResult, ReadPoint, Service,
+    StateDocument, TrialState,
 };
 use lab_kernel as k;
 
+use crate::deflated::{
+    TrialStats, decode_stat, deflated_sharpe, encode_stat, no_returns, stats_from_equity,
+};
 use crate::{Lab, LabStore};
+
+/// As-of for the equity read. The worker handle has no ceiling. As-of uses
+/// the commit clock, so the pending's decision time would hide the rows just
+/// written.
+const EQUITY_READ_NS: i64 = i64::MAX / 4;
+
+/// A longer curve is not summarized. The query cap makes a longer scan
+/// truncated, and a truncated prefix is refused.
+const EQUITY_CAP: usize = 100_000;
 
 pub struct DbWorker {
     pub engine: Arc<Engine<Lab, LabStore>>,
@@ -267,6 +283,78 @@ fn score_of(summary: &str) -> u64 {
         .unwrap_or(0)
 }
 
+struct TrialMeasure {
+    score: u64,
+    stats: TrialStats,
+}
+
+fn json_f64(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        .filter(|number| number.is_finite())
+}
+
+fn row_count(rows: &[serde_json::Value]) -> Option<u64> {
+    let cell = rows.first()?.get("n")?;
+    cell.as_u64()
+        .or_else(|| cell.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| cell.as_str().and_then(|text| text.parse().ok()))
+}
+
+/// How many equity rows were already on the fork.
+///
+/// A missing table is zero. Any other count error refuses the curve, so a
+/// failed count is not treated as an empty history.
+fn equity_start(result: Result<QueryResult, String>) -> Option<usize> {
+    match result {
+        Ok(query) => row_count(&query.rows).and_then(|n| usize::try_from(n).ok()),
+        Err(error) if error.contains("not found") => Some(0),
+        Err(_) => None,
+    }
+}
+
+/// Points appended after `before`, in the order the query returned them.
+///
+/// That order is the scan order of the append-only segments. Sorting by
+/// simulated time is wrong: a later run can restart the clock at zero and
+/// interleave. `None` means the scan was truncated, shorter than `before`,
+/// or a point did not parse. The caller records that trial as having no
+/// returns rather than a biased prefix.
+fn equity_tail(rows: &[serde_json::Value], before: usize, truncated: bool) -> Option<Vec<f64>> {
+    if truncated || rows.len() < before {
+        return None;
+    }
+    let mut curve = Vec::with_capacity(rows.len() - before);
+    for row in rows.iter().skip(before) {
+        curve.push(json_f64(row.get("equity")?)?);
+    }
+    Some(curve)
+}
+
+fn stats_of(trial: &k::Trial) -> TrialStats {
+    TrialStats {
+        sharpe: decode_stat(trial.sharpe),
+        skew: decode_stat(trial.skew),
+        kurtosis: decode_stat(trial.kurt),
+        samples: trial.samples,
+    }
+}
+
+/// Family correction, then this trial's statistics in the kernel's encoding.
+fn record_fields(prior: &[TrialStats], current: TrialStats) -> (u64, u64, u64, u64, u64) {
+    let mut trials = Vec::with_capacity(prior.len() + 1);
+    trials.extend_from_slice(prior);
+    trials.push(current);
+    (
+        deflated_sharpe(&trials),
+        encode_stat(current.sharpe),
+        encode_stat(current.skew),
+        encode_stat(current.kurtosis),
+        current.samples,
+    )
+}
+
 impl DbWorker {
     pub async fn deliver(&self, org: u64, key: &str, kind: u64, id: u64) -> Result<(), String> {
         if kind == k::EFFECT_TRIAL {
@@ -317,6 +405,15 @@ impl DbWorker {
                 .handle(Some(&fork), None)
                 .await
                 .map_err(|e| e.to_string())?;
+            let counted = handle
+                .query(&QueryRequest {
+                    decision_time_ns: EQUITY_READ_NS,
+                    sql: "SELECT count(*) AS n FROM bt_equity".into(),
+                    max_rows: Some(10),
+                })
+                .await
+                .map_err(|e| e.to_string());
+            let before = equity_start(counted);
             let mut strategy = Touch;
             let receipt = handle
                 .backtest(
@@ -333,24 +430,71 @@ impl DbWorker {
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok(receipt.result_summary)
+            let stats = match before {
+                Some(start) => match handle
+                    .query(&QueryRequest {
+                        decision_time_ns: EQUITY_READ_NS,
+                        sql: "SELECT equity FROM bt_equity".into(),
+                        max_rows: Some(EQUITY_CAP),
+                    })
+                    .await
+                {
+                    Ok(curve) => match equity_tail(&curve.rows, start, curve.truncated) {
+                        Some(points) => stats_from_equity(&points),
+                        None => no_returns(),
+                    },
+                    Err(_) => no_returns(),
+                },
+                None => no_returns(),
+            };
+            Ok(TrialMeasure {
+                score: score_of(&receipt.result_summary),
+                stats,
+            })
         })
         .await;
-        let score = match ran {
-            Ok(summary) => score_of(&summary),
+        let measured = match ran {
+            Ok(measured) => measured,
             // The engine answered. Retrying will not grow an instruments
             // catalog, and leaving the pending open would spend budget
-            // without counting the attempt. Score zero still counts.
+            // without counting the attempt. The empty trial still counts,
+            // and it still moves the family's corrected score.
             Err(error) if error.starts_with("backtest:") => {
                 self.note(org, "backtest", &error).await;
-                0
+                TrialMeasure {
+                    score: 0,
+                    stats: no_returns(),
+                }
             }
             Err(error) => return Err(error),
         };
+        let snap = self
+            .engine
+            .snapshot(TenantId(org))
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some(pending) = k::find_pending(&snap.pendings, pending_id) else {
+            return Err(format!("pending {pending_id} is not in the ledger"));
+        };
+        if pending.open != 1 {
+            return Ok(());
+        }
+        let prior: Vec<TrialStats> = snap
+            .trials
+            .iter()
+            .filter(|row| row.family == pending.family)
+            .map(stats_of)
+            .collect();
+        let (corrected, sharpe, skew, kurt, samples) = record_fields(&prior, measured.stats);
         let cmd = k::Command::RecordTrial {
             pending: pending_id,
             data_version: 1,
-            score,
+            score: measured.score,
+            corrected,
+            sharpe,
+            skew,
+            kurt,
+            samples,
             tokens: 0,
         };
         self.engine
@@ -503,7 +647,7 @@ impl DbWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use h5i_db_service::{OwnedHead, PinReceipt};
+    use h5i_db_service::{OwnedHead, PinReceipt, QueryResult};
 
     fn fork(name: &str, owned: Vec<OwnedHead>, pins: Vec<PinReceipt>) -> ForkState {
         ForkState {
@@ -526,7 +670,7 @@ mod tests {
             hypothesis: 1,
             method: 1,
             trials: 0,
-            best: 0,
+            corrected: 0,
             frozen_code: 1,
             frozen_params: 1,
             frozen_data: 1,
@@ -652,6 +796,10 @@ mod tests {
                 data_version: 1,
                 decision_time: 5,
                 score: 0,
+                sharpe: 0,
+                skew: 0,
+                kurt: 0,
+                samples: 0,
                 tokens: 0,
             }],
             ..k::Snapshot::default()
@@ -668,5 +816,43 @@ mod tests {
         assert_eq!(claimed.forks.len(), 1);
         assert_eq!(claimed.forks[0].name, "a-1");
         assert!(claimed.trials.iter().any(|row| row.run_id == "p-2"));
+    }
+
+    #[test]
+    fn the_equity_tail_is_the_appended_scan_and_a_truncated_scan_is_refused() {
+        let rows = vec![
+            serde_json::json!({"equity": 10.0}),
+            serde_json::json!({"equity": 11.0}),
+            serde_json::json!({"equity": 12.1}),
+        ];
+        assert_eq!(equity_tail(&rows, 1, false).unwrap(), vec![11.0, 12.1]);
+        assert!(equity_tail(&rows, 1, true).is_none());
+        assert!(equity_tail(&rows, 4, false).is_none());
+        assert!(equity_tail(&[serde_json::json!({"equity": "no"})], 0, false).is_none());
+        let missing = equity_start(Err("query: table \"bt_equity\" not found".into()));
+        assert_eq!(missing, Some(0));
+        assert_eq!(equity_start(Err("query: lock timeout".into())), None);
+        let counted = QueryResult {
+            decision_time_ns: 0,
+            rows: vec![serde_json::json!({"n": 4})],
+            truncated: false,
+        };
+        assert_eq!(equity_start(Ok(counted)), Some(4));
+    }
+
+    #[test]
+    fn a_failed_trial_still_deflates_the_family() {
+        let good = TrialStats {
+            sharpe: 0.5,
+            skew: 0.0,
+            kurtosis: 3.0,
+            samples: 100,
+        };
+        let alone = deflated_sharpe(&[good]);
+        let (crowded, sharpe, _, _, samples) = record_fields(&[good], no_returns());
+        assert_eq!(samples, 0);
+        assert_eq!(sharpe, encode_stat(0.0));
+        assert!(alone > 500_000, "{alone}");
+        assert!(crowded < alone, "{crowded} vs {alone}");
     }
 }

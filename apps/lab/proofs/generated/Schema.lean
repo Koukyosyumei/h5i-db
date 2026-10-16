@@ -247,9 +247,9 @@ def Agent.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Agent.tabl
 
 /-! ## `Family` (table `families`) -/
 
-/-- Columns `id`, `agent`, `task`, `hypothesis`, `method`, `trials`, `best`, `frozen_code`, `frozen_params`, `frozen_data`, `holdout`, `promoted`, `rejected`. -/
+/-- Columns `id`, `agent`, `task`, `hypothesis`, `method`, `trials`, `corrected`, `frozen_code`, `frozen_params`, `frozen_data`, `holdout`, `promoted`, `rejected`. -/
 def Family.row (x : Family) : List Val :=
-  [int x.id.val, int x.agent.val, int x.task.val, int x.hypothesis.val, int x.method.val, int x.trials.val, int x.best.val, int x.frozen_code.val, int x.frozen_params.val, int x.frozen_data.val, int x.holdout.val, int x.promoted.val, int x.rejected.val]
+  [int x.id.val, int x.agent.val, int x.task.val, int x.hypothesis.val, int x.method.val, int x.trials.val, int x.corrected.val, int x.frozen_code.val, int x.frozen_params.val, int x.frozen_data.val, int x.holdout.val, int x.promoted.val, int x.rejected.val]
 
 def Family.table : Nat := 2
 def Family.keyLen : Nat := 1
@@ -259,7 +259,7 @@ def Family.col_task : Nat := 2
 def Family.col_hypothesis : Nat := 3
 def Family.col_method : Nat := 4
 def Family.col_trials : Nat := 5
-def Family.col_best : Nat := 6
+def Family.col_corrected : Nat := 6
 def Family.col_frozen_code : Nat := 7
 def Family.col_frozen_params : Nat := 8
 def Family.col_frozen_data : Nat := 9
@@ -291,9 +291,9 @@ def Family.col_rejected : Nat := 12
     (Family.row x)[Family.col_trials]? = some (int x.trials.val) := by
   simp [Family.row, Family.col_trials]
 
-@[simp] theorem Family.row_col_best (x : Family) :
-    (Family.row x)[Family.col_best]? = some (int x.best.val) := by
-  simp [Family.row, Family.col_best]
+@[simp] theorem Family.row_col_corrected (x : Family) :
+    (Family.row x)[Family.col_corrected]? = some (int x.corrected.val) := by
+  simp [Family.row, Family.col_corrected]
 
 @[simp] theorem Family.row_col_frozen_code (x : Family) :
     (Family.row x)[Family.col_frozen_code]? = some (int x.frozen_code.val) := by
@@ -722,9 +722,9 @@ def Pending.delWhereA (col : Nat) (val : Val) : AWrite Val := .delWhere Pending.
 
 /-! ## `Trial` (table `trials`) -/
 
-/-- Columns `id`, `family`, `agent`, `code`, `params`, `data_version`, `decision_time`, `score`, `tokens`. -/
+/-- Columns `id`, `family`, `agent`, `code`, `params`, `data_version`, `decision_time`, `score`, `sharpe`, `skew`, `kurt`, `samples`, `tokens`. -/
 def Trial.row (x : Trial) : List Val :=
-  [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.data_version.val, int x.decision_time.val, int x.score.val, int x.tokens.val]
+  [int x.id.val, int x.family.val, int x.agent.val, int x.code.val, int x.params.val, int x.data_version.val, int x.decision_time.val, int x.score.val, int x.sharpe.val, int x.skew.val, int x.kurt.val, int x.samples.val, int x.tokens.val]
 
 def Trial.table : Nat := 6
 def Trial.keyLen : Nat := 1
@@ -736,7 +736,11 @@ def Trial.col_params : Nat := 4
 def Trial.col_data_version : Nat := 5
 def Trial.col_decision_time : Nat := 6
 def Trial.col_score : Nat := 7
-def Trial.col_tokens : Nat := 8
+def Trial.col_sharpe : Nat := 8
+def Trial.col_skew : Nat := 9
+def Trial.col_kurt : Nat := 10
+def Trial.col_samples : Nat := 11
+def Trial.col_tokens : Nat := 12
 
 @[simp] theorem Trial.row_col_id (x : Trial) :
     (Trial.row x)[Trial.col_id]? = some (int x.id.val) := by
@@ -770,11 +774,27 @@ def Trial.col_tokens : Nat := 8
     (Trial.row x)[Trial.col_score]? = some (int x.score.val) := by
   simp [Trial.row, Trial.col_score]
 
+@[simp] theorem Trial.row_col_sharpe (x : Trial) :
+    (Trial.row x)[Trial.col_sharpe]? = some (int x.sharpe.val) := by
+  simp [Trial.row, Trial.col_sharpe]
+
+@[simp] theorem Trial.row_col_skew (x : Trial) :
+    (Trial.row x)[Trial.col_skew]? = some (int x.skew.val) := by
+  simp [Trial.row, Trial.col_skew]
+
+@[simp] theorem Trial.row_col_kurt (x : Trial) :
+    (Trial.row x)[Trial.col_kurt]? = some (int x.kurt.val) := by
+  simp [Trial.row, Trial.col_kurt]
+
+@[simp] theorem Trial.row_col_samples (x : Trial) :
+    (Trial.row x)[Trial.col_samples]? = some (int x.samples.val) := by
+  simp [Trial.row, Trial.col_samples]
+
 @[simp] theorem Trial.row_col_tokens (x : Trial) :
     (Trial.row x)[Trial.col_tokens]? = some (int x.tokens.val) := by
   simp [Trial.row, Trial.col_tokens]
 
-@[simp] theorem Trial.row_length (x : Trial) : (Trial.row x).length = 9 := rfl
+@[simp] theorem Trial.row_length (x : Trial) : (Trial.row x).length = 13 := rfl
 
 @[step] theorem Trial.to_row_spec (x : Trial) : Trial.to_row x ⦃ v => v.val = Trial.row x ⦄ := by
   have := usize_max_le
@@ -891,7 +911,7 @@ theorem Pending.from_row_spec (x : Pending) (v : alloc.vec.Vec Val) (h : v.val =
 
 theorem Trial.from_row_spec (x : Trial) (v : alloc.vec.Vec Val) (h : v.val = Trial.row x) :
     Trial.from_row v ⦃ o => o = some x ⦄ := by
-  have hl : v.length = 9 := by simp [alloc.vec.Vec.length, h, Trial.row]
+  have hl : v.length = 13 := by simp [alloc.vec.Vec.length, h, Trial.row]
   unfold Trial.from_row; row_tac
 
 theorem Meta.from_one_spec (rows : alloc.vec.Vec (alloc.vec.Vec Val)) (l : List Meta)

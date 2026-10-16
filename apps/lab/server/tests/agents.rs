@@ -176,6 +176,11 @@ fn advisory_lets_a_shell_read_files_and_the_ledger_still_refuses() {
             pending: pending_id,
             data_version: 1,
             score: 0,
+            corrected: 0,
+            sharpe: 0,
+            skew: 0,
+            kurt: 0,
+            samples: 0,
             tokens: 0,
         },
     );

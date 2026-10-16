@@ -5,10 +5,27 @@ The kernel in `kernel/` is the protocol. The server in `server/` is the shell:
 PostgreSQL via h5i-app, an outbox worker that calls the h5i-db service API,
 and a fleet page.
 
-Reported rank is [`reported_score`]: one point off the raw best for every trial
-after the first, and zero once that penalty meets the best. It is an integer
-trial-count penalty, not the Bailey–López de Prado deflated Sharpe ratio.
-A family is never ranked on the raw best once it has more than one positive trial.
+The reported score is the deflated Sharpe ratio (Bailey and López de Prado).
+The worker computes it from the family's trial count and each trial's return
+statistics — per-period Sharpe, skew, kurtosis, and the number of simple
+returns — and stores the probability as an integer in millionths
+(`corrected`). The kernel does not evaluate that formula. It guarantees that
+`Report` returns only that stored integer and the trial count, that a family
+has no raw-best field, and that only the worker's `RecordTrial` writes the
+integer. The leaderboard and the review queue are built from those two
+numbers. A trial's raw score stays on the trial row and on the lineage table.
+It is not a rank.
+
+What the kernel does not guarantee: that the stored integer is the deflated
+Sharpe of the equity curve. That arithmetic, the normal cdf, and the
+selection hurdle live in `server/src/deflated.rs`. The worker reads
+`bt_equity` in scan order after the run (not ordered by simulated time,
+because a later run can restart the clock), takes the rows appended by this
+trial, and refuses a scan that is truncated or longer than 100,000 points.
+A missing curve, a refused scan, or an engine rejection is recorded as no
+returns (Sharpe 0, kurtosis 3, zero samples). That trial still counts, and
+the family's corrected score is recomputed with it included. The page shows
+`corrected / 1000000` to four decimals. The API field stays the integer.
 
 ## Trust
 
@@ -27,10 +44,10 @@ never falls back to a plain shell. An explicit process box fails closed when
 
 The fork is created on the first trial, not at enrollment. A trial effect runs
 a backtest on that fork. When the engine rejects the run, the worker records
-a score of zero, so the attempt still counts and the outbox does not retry a
-rejection. A promote publishes only tables the fork owns. Pins are the base
-it reads. A fork that never wrote has nothing to publish; the ledger still
-records the human's promotion.
+a score of zero and a trial with no returns, so the attempt still counts and
+the outbox does not retry a rejection. A promote publishes only tables the
+fork owns. Pins are the base it reads. A fork that never wrote has nothing to
+publish; the ledger still records the human's promotion.
 
 Starting an agent puts a one-day token for that agent in `LAB_TOKEN` and
 runs it in its own process group. Pause, resume, and stop signal that

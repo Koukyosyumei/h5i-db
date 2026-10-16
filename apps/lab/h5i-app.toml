@@ -2,7 +2,7 @@
 
 [extract]
 crate = "kernel"
-start-from = ["transition", "reported_score"]
+start-from = ["transition"]
 schema = true
 include = ["h5i_app_sql"]
 
@@ -10,7 +10,7 @@ include = ["h5i_app_sql"]
 theorems = [
     "lab_kernel.record_requires_worker",
     "lab_kernel.promote_requires_pass",
-    "lab_kernel.reported_below_raw",
+    "lab_kernel.reported_is_the_stored_correction",
     "lab_kernel.holdout_is_once",
     "lab_kernel.record_counts_the_trial",
     "lab_kernel.rejected_never_promotes",
