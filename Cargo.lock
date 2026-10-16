@@ -2174,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-backtest"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-bench"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "chrono",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "blake3",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-notebook"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-observability"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "serde",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-python"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "chrono",
@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-query"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-service"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "base64",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-ui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow",
  "axum",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "h5i-db-venues"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "chrono",
