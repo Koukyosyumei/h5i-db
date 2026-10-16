@@ -696,6 +696,69 @@ async fn a_backtest_records_one_trial_and_a_retry_does_not_run_again() {
 }
 
 #[tokio::test]
+async fn a_rejected_backtest_still_records_one_trial() {
+    use h5i_db_backtest::engine::Strategy;
+
+    let (_dir, service) = service().await;
+    service
+        .create_fork(&CreateFork {
+            idempotency_key: "k-reject-fork".into(),
+            name: "runner".into(),
+            from: ForkFrom::Head,
+            note: None,
+        })
+        .await
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    struct Counting(Arc<AtomicUsize>);
+    impl Strategy for Counting {
+        fn on_start(
+            &mut self,
+            _ctx: &mut h5i_db_backtest::engine::Context<'_>,
+        ) -> h5i_db_backtest::error::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let request = BacktestRequest {
+        idempotency_key: "k-reject".into(),
+        run_id: "p-2".into(),
+        code_identity: "3".into(),
+        parameters: "4".into(),
+        decision_time_ns: i64::MAX / 4,
+        starting_cash_raw: 1_000_000_000_000,
+        read_at: ReadPoint::Latest,
+    };
+    let handle = service.handle(Some("runner"), None).await.unwrap();
+    let mut strategy = Counting(Arc::clone(&calls));
+    let error = handle.backtest(&request, &mut strategy).await.unwrap_err();
+    assert_eq!(error.code(), "backtest");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let trials = handle.list_trials().await.unwrap();
+    assert_eq!(trials.len(), 1);
+    assert_eq!(trials[0].run_id, "p-2");
+    assert_eq!(trials[0].code_identity, "3");
+    assert!(
+        trials[0].result_summary.contains("rejected"),
+        "{}",
+        trials[0].result_summary
+    );
+    assert!(trials[0].result_summary.contains("records_processed"));
+
+    let mut strategy = Counting(Arc::clone(&calls));
+    let again = handle.backtest(&request, &mut strategy).await.unwrap_err();
+    assert_eq!(again.code(), "backtest");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "a retry must not run");
+    assert_eq!(handle.list_trials().await.unwrap().len(), 1);
+
+    let actual = service.export_state().await.unwrap();
+    let mut ledger = actual.clone();
+    assert!(Service::reconcile(&actual, &ledger).agrees());
+    ledger.trials.clear();
+    assert!(!Service::reconcile(&actual, &ledger).agrees());
+}
+
+#[tokio::test]
 async fn plan_apply_replays_and_a_moved_head_conflicts() {
     use h5i_db_service::{ApplyRequest, PlanRequest};
 

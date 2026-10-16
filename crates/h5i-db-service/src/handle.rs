@@ -216,7 +216,8 @@ impl Handle {
     /// Run `strategy` on this handle's fork and record a trial.
     ///
     /// The same key and request returns the stored receipt and does not call
-    /// `strategy`. There is no flag that skips the trial row.
+    /// `strategy`. A run the engine rejects still leaves a `bt_trial` row.
+    /// There is no flag that skips the trial row.
     pub async fn backtest(
         &self,
         request: &BacktestRequest,
@@ -241,6 +242,9 @@ impl Handle {
                 && stored.parameters == request.parameters
                 && stored.decision_time_ns == Some(request.decision_time_ns)
             {
+                if let Some(detail) = rejected_detail(&stored.result_summary) {
+                    return Err(ServiceError::engine("backtest", detail));
+                }
                 let receipt = receipt_from_trial(&stored);
                 let key = request.idempotency_key.clone();
                 crate::effect::with_effect(&self.db, &key, &fingerprint, "backtest", || async {
@@ -268,9 +272,15 @@ impl Handle {
         .parameters(request.parameters.clone())
         .decision_time_ns(request.decision_time_ns)
         .read_at(to_read_at(&request.read_at));
-        h5i_db_backtest::run::run_in_place(&db, spec, strategy, |builder| builder)
-            .await
-            .map_err(|error| ServiceError::engine("backtest", error.to_string()))?;
+        if let Err(error) =
+            h5i_db_backtest::run::run_in_place(&db, spec.clone(), strategy, |builder| builder).await
+        {
+            let detail = error.to_string();
+            h5i_db_backtest::run::record_rejection(&db, &spec, &detail)
+                .await
+                .map_err(|error| ServiceError::engine("storage", error.to_string()))?;
+            return Err(ServiceError::engine("backtest", detail));
+        }
         let stored = self
             .find_trial(&request.run_id)
             .await?
@@ -305,6 +315,14 @@ impl Handle {
         let trials = read_trials(&self.db, &fork).await?;
         Ok(trials.into_iter().find(|trial| trial.run_id == run_id))
     }
+}
+
+fn rejected_detail(summary: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(summary)
+        .ok()?
+        .get("rejected")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }
 
 fn existing_matches(existing: &StoredBacktest, fingerprint: &str) -> bool {

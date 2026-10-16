@@ -1956,6 +1956,69 @@ fn trial_batch(
     build(schema::TRIAL, schema::trial(FixedEncoding::Float), columns)
 }
 
+/// Record a run the engine refused.
+///
+/// This is not a way to skip a finished run. If `run_id` is already a trial,
+/// the row stays as it is. A caller cannot use this to drop a result.
+pub async fn write_rejected_trial(
+    db: &Database,
+    run_id: &str,
+    config_digest: &str,
+    trial: &TrialStamp,
+    started_at: UnixNanos,
+    detail: &str,
+) -> Result<()> {
+    create_run_tables(db).await?;
+    if trial_run_exists(db, run_id).await? {
+        return Ok(());
+    }
+    let batch = rejected_trial_batch(run_id, config_digest, trial, started_at, detail)?;
+    commit_run_batches(db, vec![(schema::TRIAL, batch)]).await
+}
+
+fn rejected_trial_batch(
+    run_id: &str,
+    config_digest: &str,
+    trial: &TrialStamp,
+    started_at: UnixNanos,
+    detail: &str,
+) -> Result<Option<RecordBatch>> {
+    let summary = serde_json::json!({
+        "final_cash": 0,
+        "realized_pnl": 0,
+        "commissions": 0,
+        "records_processed": 0,
+        "settlement_applied": false,
+        "rejected": detail,
+    });
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(TimestampNanosecondArray::from(vec![started_at.get()])),
+        Arc::new(StringArray::from(vec![run_id])),
+        Arc::new(StringArray::from(vec![config_digest])),
+        Arc::new(StringArray::from(vec![trial.code_identity.as_str()])),
+        Arc::new(StringArray::from(vec![trial.parameters.as_str()])),
+        Arc::new(StringArray::from(vec![trial.data_version.as_str()])),
+        Arc::new(Int64Array::from(vec![trial.decision_time_ns])),
+        Arc::new(StringArray::from(vec![trial.scope.as_str()])),
+        Arc::new(StringArray::from(vec![summary.to_string()])),
+    ];
+    build(schema::TRIAL, schema::trial(FixedEncoding::Float), columns)
+}
+
+async fn trial_run_exists(db: &Database, run_id: &str) -> Result<bool> {
+    let columns: &[&str] = &["run_id"];
+    let batches = scan(db, schema::TRIAL, ReadAt::Latest, None, Some(columns)).await?;
+    for batch in &batches {
+        let ids = column::<StringArray>(batch, "run_id")?;
+        for row in 0..batch.num_rows() {
+            if ids.value(row) == run_id {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Commit every non-empty run table in one transaction.
 ///
 /// Falls back to the per-table path when the rows land in the past, because

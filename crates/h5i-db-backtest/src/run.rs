@@ -550,6 +550,27 @@ where
     })
 }
 
+/// The run did not finish. Write the trial row anyway, so the attempt is in
+/// the database. A run id that already has a trial is left unchanged.
+pub async fn record_rejection(db: &Database, spec: &RunSpec, detail: &str) -> Result<()> {
+    let started_at = UnixNanos::new(
+        spec.window
+            .map(|window| window.start().get())
+            .unwrap_or_default(),
+    );
+    let stamp = store::TrialStamp {
+        code_identity: spec
+            .code_identity
+            .clone()
+            .unwrap_or_else(|| "unspecified".to_string()),
+        parameters: spec.parameters.clone().unwrap_or_else(|| "{}".to_string()),
+        data_version: recorded_data_version(db, &spec.read_at).await?,
+        decision_time_ns: spec.decision_time_ns,
+        scope: trial_scope(db, spec),
+    };
+    store::write_rejected_trial(db, &spec.run_id, &spec.digest(), &stamp, started_at, detail).await
+}
+
 fn trial_scope(db: &Database, spec: &RunSpec) -> String {
     let fork = db.fork_name().unwrap_or("base");
     let window = match spec.window {

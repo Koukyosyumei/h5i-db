@@ -819,6 +819,72 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_backtest_reconciles_with_the_ledger_trial() {
+        let snap = k::Snapshot {
+            agents: vec![k::Agent {
+                id: 1,
+                budget: 1,
+                used: 1,
+                token_budget: 1,
+                tokens_used: 0,
+                fork_id: 1,
+                sandbox: 0,
+            }],
+            trials: vec![k::Trial {
+                id: 2,
+                family: 1,
+                agent: 1,
+                code: 3,
+                params: 4,
+                data_version: 1,
+                decision_time: 5,
+                score: 0,
+                sharpe: 0,
+                skew: 0,
+                kurt: 0,
+                samples: 0,
+                tokens: 0,
+            }],
+            ..k::Snapshot::default()
+        };
+        let rejected = TrialState {
+            fork: "a-1".into(),
+            run_id: "p-2".into(),
+            ts_ns: 7,
+            config_digest: "d".into(),
+            code_identity: "3".into(),
+            parameters: "4".into(),
+            data_version: "1".into(),
+            decision_time_ns: Some(5),
+            scope: "fork=a-1;window=all".into(),
+            result_summary: "{\"records_processed\":0,\"rejected\":\"no instruments\"}".into(),
+        };
+        let actual = StateDocument {
+            format: h5i_db_service::STATE_FORMAT,
+            forks: vec![fork("a-1", vec![], vec![])],
+            versions: vec![],
+            trials: vec![rejected],
+            evaluations: vec![],
+            promotions: vec![],
+        };
+        let claimed = kernel_claims(&snap, &actual, "holdout");
+        assert!(
+            Service::reconcile(&actual, &claimed).agrees(),
+            "the database trial is the ledger trial"
+        );
+        assert!(claimed.trials[0].result_summary.contains("rejected"));
+
+        let missing = StateDocument {
+            trials: vec![],
+            ..actual
+        };
+        assert!(
+            !Service::reconcile(&missing, &kernel_claims(&snap, &missing, "holdout")).agrees(),
+            "a ledger trial with no bt_trial row does not reconcile"
+        );
+    }
+
+    #[test]
     fn the_equity_tail_is_the_appended_scan_and_a_truncated_scan_is_refused() {
         let rows = vec![
             serde_json::json!({"equity": 10.0}),
