@@ -502,7 +502,6 @@ impl DbWorker {
                 .await
                 .map_err(|e| e.to_string())?;
             let mut run = Run::new(&code, &params);
-            let cash = Money::from_f64(STARTING_CASH).map_err(|e| e.to_string())?;
             let receipt = handle
                 .backtest(
                     &BacktestRequest {
@@ -511,7 +510,7 @@ impl DbWorker {
                         code_identity: identity,
                         parameters,
                         decision_time_ns: decision,
-                        starting_cash_raw: cash.raw() as i64,
+                        starting_cash_raw: (STARTING_CASH * 1e9) as i64,
                         read_at: ReadPoint::Latest,
                     },
                     &mut run,

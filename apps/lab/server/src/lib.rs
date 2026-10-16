@@ -468,13 +468,18 @@ enum StoredReply {
     },
     // Kernel rows stay free of serde. The tuple order is the struct field order.
     Fleet {
-        agents: Vec<(u64, u64, u64, u64, u64, u64, u64, u64)>,
+        agents: Vec<AgentRow>,
         families: Vec<FamilyRow>,
         trials: Vec<TrialRow>,
-        texts: Vec<(u64, u64, Vec<u8>, Vec<u8>)>,
+        texts: Vec<TextRow>,
         curves: Vec<(u64, Vec<u8>)>,
     },
 }
+
+/// An agent row in field order.
+type AgentRow = (u64, u64, u64, u64, u64, u64, u64, u64);
+/// A text row in field order: id, kind, name, body.
+type TextRow = (u64, u64, Vec<u8>, Vec<u8>);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FamilyRow {
