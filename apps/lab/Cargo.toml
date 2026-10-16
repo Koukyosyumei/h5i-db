@@ -1,3 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["kernel", "server"]
+
+[patch.crates-io]
+# Same as the root workspace: object_store 0.13's AWS feature pins a
+# vulnerable quick-xml; the compat package carries the fixed parser.
+object_store = { path = "../../compat/object-store-0.13" }
