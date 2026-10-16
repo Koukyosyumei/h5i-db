@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 pub use runner::{
     Activity, AgentProc, BoxSpec, Runner, SandboxMode, activity, looks_looping, looks_stalled,
-    start_agent, start_shell, stop_agent, wait_agent,
+    pause_agent, resume_agent, start_agent, start_shell, stop_agent, wait_agent,
 };
 pub use worker::{DbWorker, kernel_claims};
 
@@ -513,6 +513,8 @@ pub struct Alert {
 pub struct App {
     pub engine: Arc<Engine<Lab, LabStore>>,
     pub auth: Auth<Lab>,
+    /// HMAC secret used to mint the one-day token handed to a started agent.
+    pub secret: Vec<u8>,
     pub db: Arc<h5i_db_service::Service>,
     pub alerts: Arc<Mutex<Vec<Alert>>>,
     pub runner: Arc<Mutex<Runner>>,
@@ -541,6 +543,36 @@ impl App {
             detail,
         });
     }
+}
+
+/// Latest decision time this agent has registered, as a handle ceiling.
+///
+/// Pending requests and recorded trials both count. An agent with neither
+/// has no ceiling, and a query is refused instead of widening to "now".
+pub fn agent_ceiling_ns(snap: &k::Snapshot, agent: u64) -> Option<i64> {
+    let mut best: Option<u64> = None;
+    for row in snap
+        .pendings
+        .iter()
+        .filter(|row| row.agent == agent)
+        .map(|row| row.decision_time)
+        .chain(
+            snap.trials
+                .iter()
+                .filter(|row| row.agent == agent)
+                .map(|row| row.decision_time),
+        )
+    {
+        best = Some(best.map(|have| have.max(row)).unwrap_or(row));
+    }
+    best.and_then(|value| i64::try_from(value).ok())
+}
+
+fn family_rejected(runner: &Runner, family: u64) -> bool {
+    runner
+        .comments
+        .iter()
+        .any(|comment| comment.family == family && comment.decision == "reject")
 }
 
 /// Three or more trials with the same family, code and parameters.
@@ -585,6 +617,35 @@ mod tests {
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("family 1"));
     }
+
+    #[test]
+    fn the_ceiling_is_the_latest_registered_decision_time() {
+        let snap = k::Snapshot {
+            pendings: vec![k::Pending {
+                id: 1,
+                family: 1,
+                agent: 4,
+                code: 1,
+                params: 1,
+                decision_time: 20,
+                open: 1,
+            }],
+            trials: vec![k::Trial {
+                id: 2,
+                family: 1,
+                agent: 4,
+                code: 1,
+                params: 1,
+                data_version: 1,
+                decision_time: 50,
+                score: 1,
+                tokens: 0,
+            }],
+            ..k::Snapshot::default()
+        };
+        assert_eq!(agent_ceiling_ns(&snap, 4), Some(50));
+        assert_eq!(agent_ceiling_ns(&snap, 9), None);
+    }
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -599,7 +660,10 @@ pub fn router(app: App) -> Router {
         .route("/api/activity", get(activity_route))
         .route("/api/agents/start", post(start))
         .route("/api/agents/stop", post(stop))
+        .route("/api/agents/pause", post(pause))
+        .route("/api/agents/resume", post(resume))
         .route("/api/comment", post(comment))
+        .route("/api/comments", get(comments))
         .with_state(app)
 }
 
@@ -617,6 +681,12 @@ async fn rpc(
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    if let k::Command::Promote { family } = &cmd {
+        if family_rejected(&app.runner.lock().expect("runner"), *family) {
+            app.push_alert("rejected", format!("promote of family {family}"));
+            return reply(StatusCode::CONFLICT, error_body("rejected"));
+        }
+    }
     let result = match &key {
         Some(k) => {
             app.engine
@@ -667,13 +737,43 @@ async fn query(
         app.push_alert("denied", "query from an unknown role");
         return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
     }
-    // An agent is pinned to its own fork. A human query still has no holdout grant.
-    let fork = if principal.role == k::ROLE_AGENT {
-        Some(format!("a-{}", principal.agent))
+    // An agent is pinned to its own fork and to the latest decision time it
+    // registered. A human or worker query still has no holdout grant.
+    let (fork, ceiling) = if principal.role == k::ROLE_AGENT {
+        let snap = match app.engine.snapshot(TenantId(principal.org)).await {
+            Ok(snap) => snap,
+            Err(error) => {
+                return reply(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    error_body(&error.to_string()),
+                );
+            }
+        };
+        let Some(ceiling) = agent_ceiling_ns(&snap, principal.agent) else {
+            app.push_alert(
+                "lookahead",
+                format!(
+                    "agent {} queried before registering a decision time",
+                    principal.agent
+                ),
+            );
+            return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
+        };
+        if body.decision_time_ns > ceiling {
+            app.push_alert(
+                "lookahead",
+                format!(
+                    "agent {} asked for {} past ceiling {ceiling}",
+                    principal.agent, body.decision_time_ns
+                ),
+            );
+            return reply(StatusCode::FORBIDDEN, error_body("scope_denied"));
+        }
+        (Some(format!("a-{}", principal.agent)), Some(ceiling))
     } else {
-        None
+        (None, None)
     };
-    let handle = match app.db.handle(fork.as_deref(), None).await {
+    let handle = match app.db.handle(fork.as_deref(), ceiling).await {
         Ok(handle) => handle,
         Err(error) => {
             app.push_alert("denied", error.to_string());
@@ -731,7 +831,7 @@ async fn alerts(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Re
             );
         }
         if looks_stalled(
-            row.running,
+            row.running && !row.paused,
             row.output.len(),
             row.elapsed,
             std::time::Duration::from_secs(30),
@@ -757,6 +857,11 @@ async fn activity_route(State(app): State<App>, _actor: Actor<Lab>) -> axum::res
                         "running",
                         Out::str(if row.running { "true" } else { "false" }),
                     ),
+                    (
+                        "paused",
+                        Out::str(if row.paused { "true" } else { "false" }),
+                    ),
+                    ("rss_kb", row.rss_kb.into()),
                     ("output", Out::str(&row.output)),
                 ])
             })
@@ -797,7 +902,19 @@ async fn start(
     } else {
         SandboxMode::Box
     };
-    match start_agent(&app.runner, body.agent, mode, &body.script, &body.data_dir) {
+    let token = h5i_app_http::HmacAuth::<Lab>::new(app.secret.clone(), principal_from_token).issue(
+        actor.principal().org,
+        token_user(k::ROLE_AGENT, body.agent),
+        86_400,
+    );
+    match start_agent(
+        &app.runner,
+        body.agent,
+        mode,
+        &body.script,
+        &body.data_dir,
+        Some(&token),
+    ) {
         Ok(()) => reply(
             StatusCode::OK,
             Out::obj([("trust", Out::str(mode.label()))]),
@@ -826,9 +943,51 @@ async fn stop(
 }
 
 #[derive(Deserialize)]
+struct AgentBody {
+    agent: u64,
+}
+
+async fn pause(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<AgentBody>,
+) -> axum::response::Response {
+    signal_route(&app, &actor, body.agent, true)
+}
+
+async fn resume(
+    State(app): State<App>,
+    actor: Actor<Lab>,
+    Json(body): Json<AgentBody>,
+) -> axum::response::Response {
+    signal_route(&app, &actor, body.agent, false)
+}
+
+fn signal_route(
+    app: &App,
+    actor: &Actor<Lab>,
+    agent: u64,
+    pause: bool,
+) -> axum::response::Response {
+    if actor.principal().role != k::ROLE_HUMAN {
+        return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
+    }
+    let result = if pause {
+        pause_agent(&app.runner, agent)
+    } else {
+        resume_agent(&app.runner, agent)
+    };
+    match result {
+        Ok(()) => reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))])),
+        Err(error) => reply(StatusCode::NOT_FOUND, error_body(&error)),
+    }
+}
+
+#[derive(Deserialize)]
 struct CommentBody {
     family: u64,
     text: String,
+    decision: Option<String>,
 }
 
 async fn comment(
@@ -839,6 +998,11 @@ async fn comment(
     if actor.principal().role != k::ROLE_HUMAN {
         return reply(StatusCode::FORBIDDEN, error_body("forbidden"));
     }
+    let decision = match body.decision.as_deref() {
+        None | Some("note") => "note",
+        Some("reject") => "reject",
+        Some(_) => return reply(StatusCode::UNPROCESSABLE_ENTITY, error_body("invalid")),
+    };
     app.runner
         .lock()
         .expect("runner")
@@ -846,8 +1010,50 @@ async fn comment(
         .push(runner::Comment {
             family: body.family,
             text: body.text,
+            decision: decision.into(),
         });
     reply(StatusCode::OK, Out::obj([("ok", Out::str("true"))]))
+}
+
+async fn comments(State(app): State<App>, actor: Actor<Lab>) -> axum::response::Response {
+    let principal = actor.principal();
+    let stored = app.runner.lock().expect("runner").comments.clone();
+    let visible = if principal.role == k::ROLE_AGENT {
+        let snap = match app.engine.snapshot(TenantId(principal.org)).await {
+            Ok(snap) => snap,
+            Err(error) => {
+                return reply(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    error_body(&error.to_string()),
+                );
+            }
+        };
+        let owned: Vec<u64> = snap
+            .families
+            .iter()
+            .filter(|family| family.agent == principal.agent)
+            .map(|family| family.id)
+            .collect();
+        stored
+            .into_iter()
+            .filter(|comment| owned.contains(&comment.family))
+            .collect::<Vec<_>>()
+    } else {
+        stored
+    };
+    let body = Out::Arr(
+        visible
+            .iter()
+            .map(|comment| {
+                Out::obj([
+                    ("family", comment.family.into()),
+                    ("decision", Out::str(&comment.decision)),
+                    ("text", Out::str(&comment.text)),
+                ])
+            })
+            .collect(),
+    );
+    reply(StatusCode::OK, Out::obj([("comments", body)]))
 }
 
 /// Deliver outbox effects to h5i-db, then record the result as a kernel command.

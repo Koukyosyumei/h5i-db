@@ -13,9 +13,9 @@ A family is never ranked on the raw best once it has more than one positive tria
 ## Trust
 
 An agent enrolled with `sandbox = 0` is **advisory**. The API refuses a query
-that asks for a sealed holdout or for a decision time past the handle, and the
-agent cannot record its own trial. A process with a shell can still open the
-data directory.
+that asks for a sealed holdout or for a decision time past the latest one
+that agent registered, and the agent cannot record its own trial. A process
+with a shell can still open the data directory.
 
 An agent enrolled with `sandbox = 1` is **enforced**. The runner starts it
 with `h5i box run` (`LAB_BOX`, `LAB_BOX_DIR`). The box policy must omit the
@@ -26,11 +26,16 @@ never falls back to a plain shell. An explicit process box fails closed when
 ## Delivery
 
 The fork is created on the first trial, not at enrollment. A trial effect runs
-a backtest on that fork. When the engine rejects
-the run, the worker records a score of zero, so the attempt still counts and
-the outbox does not retry a rejection. A promote publishes only tables the
-fork owns. Pins are the base it reads. A fork that never wrote has nothing
-to publish; the ledger still records the human's promotion.
+a backtest on that fork. When the engine rejects the run, the worker records
+a score of zero, so the attempt still counts and the outbox does not retry a
+rejection. A promote publishes only tables the fork owns. Pins are the base
+it reads. A fork that never wrote has nothing to publish; the ledger still
+records the human's promotion.
+
+Starting an agent puts a one-day token for that agent in `LAB_TOKEN`. Pause
+and resume send `SIGSTOP` and `SIGCONT`. A review comment is visible to the
+owning agent at `GET /api/comments`. A reject blocks promote until the
+process restarts; the block is not a ledger row.
 
 ## Prove
 

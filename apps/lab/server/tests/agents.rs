@@ -36,7 +36,7 @@ fn step(s: &k::Snapshot, actor: k::Principal, cmd: k::Command) -> k::Snapshot {
 
 fn run(mode: SandboxMode, command: &str, data_dir: &str, boxed: Option<BoxSpec>) -> (bool, String) {
     let runner = Mutex::new(Runner::new());
-    start_shell(&runner, 1, mode, command, data_dir, boxed).unwrap();
+    start_shell(&runner, 1, mode, command, data_dir, boxed, None).unwrap();
     let (status, output) = wait_agent(&runner, 1).unwrap();
     (status.success(), output)
 }

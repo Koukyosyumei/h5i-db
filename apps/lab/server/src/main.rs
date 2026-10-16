@@ -22,7 +22,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seal_id = std::env::var("LAB_SEAL").unwrap_or_else(|_| "holdout".into());
     let holdout_table = std::env::var("LAB_TABLE").unwrap_or_else(|_| "trades".into());
 
-    let hmac = h5i_app_http::HmacAuth::<Lab>::new(secret, principal_from_token);
+    let secret = secret.into_bytes();
+    let hmac = h5i_app_http::HmacAuth::<Lab>::new(secret.clone(), principal_from_token);
     if let Ok(spec) = std::env::var("H5I_APP_ISSUE") {
         // H5I_APP_ISSUE=<org>:<role>:<id> prints a one-day token and exits.
         let mut parts = spec.split(':');
@@ -42,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App {
         engine: Arc::clone(&engine),
         auth: Auth(Arc::new(hmac)),
+        secret,
         db,
         alerts: Arc::new(Mutex::new(Vec::new())),
         runner: Arc::new(Mutex::new(Runner::new())),

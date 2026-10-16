@@ -90,8 +90,9 @@ button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
   </section>
   <section class="wide">
     <h2>review</h2>
-    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>holdout</th><th>promoted</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="review"><thead><tr><th>family</th><th>hypothesis</th><th>method</th><th>holdout</th><th>promoted</th><th></th></tr></thead><tbody></tbody></table>
     <p><input id="comment" placeholder="comment back to the agent"><button id="send">comment</button></p>
+    <table id="notes"><thead><tr><th>family</th><th>decision</th><th>text</th></tr></thead><tbody></tbody></table>
   </section>
   <section>
     <h2>lineage</h2>
@@ -99,7 +100,7 @@ button:hover { border-color: var(--hd-accent); color: var(--hd-accent); }
   </section>
   <section>
     <h2>activity</h2>
-    <table id="activity"><thead><tr><th>agent</th><th>trust</th><th>pid</th><th>state</th><th>output</th></tr></thead><tbody></tbody></table>
+    <table id="activity"><thead><tr><th>agent</th><th>trust</th><th>pid</th><th>state</th><th>rss</th><th>output</th></tr></thead><tbody></tbody></table>
   </section>
   <section>
     <h2>alerts</h2>
@@ -139,28 +140,47 @@ async function refresh() {
   const ranked = families.slice().sort((a, b) => b.reported - a.reported);
   rows(document.querySelector("#board"), ranked.map(f =>
     `<tr><td>${f.id}</td><td>${f.trials}</td><td>${f.best}</td><td class="${f.trials > 1 ? "ok" : ""}">${f.reported}</td></tr>`).join(""));
-  rows(document.querySelector("#review"), families.map(f =>
-    `<tr><td>${f.id}</td><td>${f.hypothesis}/${f.method}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${f.holdout === 1 && !f.promoted ? `<button data-promote="${f.id}">promote</button>` : ""}</td></tr>`).join(""));
+  const notes = await fetch("/api/comments", { headers: headers() }).then(r => r.json()).catch(() => ({ comments: [] }));
+  const rejected = new Set((notes.comments || []).filter(c => c.decision === "reject").map(c => c.family));
+  rows(document.querySelector("#review"), families.map(f => {
+    const actions = [];
+    if (f.holdout === 1 && !f.promoted && !rejected.has(f.id)) actions.push(`<button data-promote="${f.id}">promote</button>`);
+    if (!f.promoted && !rejected.has(f.id)) actions.push(`<button data-reject="${f.id}">reject</button>`);
+    return `<tr><td>${f.id}</td><td>${f.hypothesis}</td><td>${f.method}</td><td>${holdoutName(f.holdout)}</td><td>${f.promoted ? "yes" : "no"}</td><td>${actions.join(" ")}</td></tr>`;
+  }).join(""));
+  rows(document.querySelector("#notes"), (notes.comments || []).map(c =>
+    `<tr><td>${c.family}</td><td>${c.decision}</td><td>${c.text}</td></tr>`).join(""));
   rows(document.querySelector("#lineage"), trials.map(t =>
     `<tr><td>${t.id}</td><td>${t.code}</td><td>${t.params}</td><td>${t.data_version}</td><td>${t.decision_time}</td><td>${t.score}</td></tr>`).join(""));
   const live = await fetch("/api/activity", { headers: headers() }).then(r => r.json()).catch(() => ({ agents: [] }));
-  rows(document.querySelector("#activity"), (live.agents || []).map(a =>
-    `<tr><td>${a.agent}</td><td>${a.trust}</td><td>${a.pid}</td><td>${a.running}</td><td>${(a.output || "").slice(-180)}</td></tr>`).join(""));
+  rows(document.querySelector("#activity"), (live.agents || []).map(a => {
+    const state = a.paused === "true" ? "paused" : (a.running === "true" ? "running" : "exited");
+    return `<tr><td>${a.agent}</td><td>${a.trust}</td><td>${a.pid}</td><td>${state}</td><td>${a.rss_kb}k</td><td>${(a.output || "").slice(-180)}</td></tr>`;
+  }).join(""));
   const alerts = await fetch("/api/alerts", { headers: headers() }).then(r => r.json()).catch(() => ({ alerts: "[]" }));
   let parsed = [];
   try { parsed = JSON.parse(alerts.alerts || "[]"); } catch (e) { parsed = []; }
   rows(document.querySelector("#alerts"), parsed.map(a => `<tr><td class="bad">${a.kind}</td><td>${a.detail}</td></tr>`).join(""));
 }
 document.body.addEventListener("click", async (event) => {
-  const id = event.target.dataset && event.target.dataset.promote;
-  if (!id) return;
-  await rpc({ cmd: "promote", family: Number(id) });
+  const promote = event.target.dataset && event.target.dataset.promote;
+  if (promote) {
+    await rpc({ cmd: "promote", family: Number(promote) });
+    refresh();
+    return;
+  }
+  const reject = event.target.dataset && event.target.dataset.reject;
+  if (!reject) return;
+  const text = document.querySelector("#comment").value || "rejected";
+  await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family: Number(reject), text, decision: "reject" }) });
+  document.querySelector("#comment").value = "";
   refresh();
 });
 document.querySelector("#send").addEventListener("click", async () => {
   const family = Number((document.querySelector("#review tbody tr td") || {}).textContent || 0);
-  await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family, text: document.querySelector("#comment").value }) });
+  await fetch("/api/comment", { method: "POST", headers: headers(), body: JSON.stringify({ family, text: document.querySelector("#comment").value, decision: "note" }) });
   document.querySelector("#comment").value = "";
+  refresh();
 });
 setInterval(refresh, 3000);
 refresh();
