@@ -263,8 +263,11 @@ fn a_box_denies_the_data_directory() {
         return;
     }
 
-    // This host cannot execute a confined command. An explicit process box
-    // fails closed, and the runner does not fall back to an unconfined shell.
+    // The process tier is not runnable here. Ubuntu 24.04 with
+    // kernel.apparmor_restrict_unprivileged_userns=1 denies the
+    // unprivileged CLONE_NEWUSER that `h5i box` requires, so `true` inside
+    // the sandbox returns EPERM. Create must fail closed. The runner must
+    // not fall back to an unconfined shell. See README.md.
     let created = Command::new("h5i")
         .args([
             "box",

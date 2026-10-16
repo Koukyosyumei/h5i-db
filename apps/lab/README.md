@@ -40,6 +40,22 @@ data directory from `fs.read`, so the file open fails as well. The runner
 never falls back to a plain shell. An explicit process box fails closed when
 `h5i box probe` reports that the process tier cannot execute on the host.
 
+The process tier always `unshare`s `CLONE_NEWUSER` before it executes a
+command. Capability bits are not enough. `h5i box probe` and
+`h5i box capabilities` can report Landlock, user namespaces, and seccomp as
+present, and `claim process satisfiable = yes`, while
+`process tier runnable = no`. The functional check runs `true` in the
+sandbox. On Ubuntu 24.04 with AppArmor enabled,
+`kernel.unprivileged_userns_clone = 1`, and
+`kernel.apparmor_restrict_unprivileged_userns = 1`, that `unshare` returns
+`EPERM` (os error 13) for an unprivileged user. The host requirement is an
+AppArmor policy that allows this user's unprivileged user namespaces: either
+`apparmor_restrict_unprivileged_userns = 0`, or a profile on `h5i` with the
+`userns` flag. Those are host settings. The workspace tier is not a
+substitute. It does not deny the data directory. While the process tier is
+not runnable, `h5i box create --isolation process` fails and the runner does
+not start the agent.
+
 ## Delivery
 
 The fork is created on the first trial, not at enrollment. A trial effect runs
